@@ -1,31 +1,27 @@
-version: "3.9"
-
 services:
   saurally-order-relay:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: saurally-order-relay:local
+    image: golang:1.22-alpine
     container_name: saurally-order-relay
+
     restart: unless-stopped
 
-    ports:
-      - "5555:8080"
+    working_dir: /app
 
     env_file:
       - .env
 
+    # Port mapping: TrueNAS 5555 → container 8080
+    ports:
+      - "5555:8080"
+
     volumes:
-      - ./data:/data
+      # Source code
+      - /mnt/SSD256/configs/saurally-order-relay:/app
 
-    healthcheck:
-      test: ["CMD", "/app/saurally-order-relay", "-healthcheck"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
+      # Persistent data & logs
+      - /mnt/SSD256/configs/saurally-order-relay:/data
 
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+    command: >
+      sh -c "
+      go mod init saurally-order-relay 2>/dev/null || true &&
+      go mod tidy
