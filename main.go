@@ -301,9 +301,28 @@ func rootHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	storeJSON("gokwik", uuid.New().String(), payload)
-	_ = mauticUpsert(mauticPayload)
+	err = mauticUpsert(mauticPayload)
+	
+	if err == nil {
+		w.Write([]byte(`{"status":"ok"}`))
+		logger.Printf(
+			"INFO | mautic upsert abc successful | email=%s",
+			email,
+		)
+	} else {
+		logger.Printf(
+			"ERROR | mautic upsert abc failed | email=%s | error=%s",
+			email,
+			err.Error(),
+		)
+	}
+	
+	// logger.Printf(
+    // "INFO | gokwik payload received | email=%s",
+    // email,
+  	// )
 
-	w.Write([]byte(`{"status":"ok"}`))
+	// w.Write([]byte(`{"status":"ok"}`))
 }
 
 /*
@@ -352,7 +371,21 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	storeJSON("woocommerce", uuid.New().String(), order)
-	_ = mauticUpsert(mauticPayload)
+	err = mauticUpsert(mauticPayload)
+	
+	if err == nil {
+		w.Write([]byte(`{"status":"ok"}`))
+		logger.Printf(
+			"INFO | mautic upsert order successful | email=%s",
+			email,
+		)
+	} else {
+		logger.Printf(
+			"ERROR | mautic upsert order failed | email=%s | error=%s",
+			email,
+			err.Error(),
+		)
+	}
 
 	status := normalizeStatus(fmt.Sprintf("%v", order["status"]))
 
@@ -387,11 +420,11 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 
 			if err := sendWhatsAppTemplate(orderID, phone, msgOrderShipped, vars, "fulfilled"); err == nil {
 				createFlag(flag)
-			}
+			} // add else error logging
 		}
 	}
 
-	w.Write([]byte(`{"status":"ok"}`))
+	// w.Write([]byte(`{"status":"ok"}`))
 }
 
 //
