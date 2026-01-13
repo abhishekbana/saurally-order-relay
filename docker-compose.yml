@@ -1,0 +1,28 @@
+version: "3.9"
+
+services:
+  saurally-order-relay:
+    image: saurally/saurally-order-relay:1.0.0
+    container_name: saurally-order-relay
+    restart: unless-stopped
+
+    ports:
+      - "8080:8080"
+
+    env_file:
+      - .env
+
+    volumes:
+      - ./data:/data
+
+    healthcheck:
+      test: ["CMD", "/app/saurally-order-relay", "-healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
