@@ -10,18 +10,22 @@ services:
     env_file:
       - .env
 
-    # Port mapping: TrueNAS 5555 → container 8080
     ports:
       - "5555:8080"
 
     volumes:
-      # Source code
       - /mnt/SSD256/configs/saurally-order-relay:/app
-
-      # Persistent data & logs
       - /mnt/SSD256/configs/saurally-order-relay:/data
 
     command: >
       sh -c "
       go mod init saurally-order-relay 2>/dev/null || true &&
-      go mod tidy
+      go mod tidy &&
+      go run main.go
+      "
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
