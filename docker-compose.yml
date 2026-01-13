@@ -2,7 +2,10 @@ version: "3.9"
 
 services:
   saurally-order-relay:
-    image: saurally/saurally-order-relay:1.0.0
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: saurally-order-relay:local
     container_name: saurally-order-relay
     restart: unless-stopped
 
