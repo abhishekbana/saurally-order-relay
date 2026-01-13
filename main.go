@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,14 +17,12 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 //
-// -------------------------------------------------------------------
-// Configuration
-// -------------------------------------------------------------------
+// ------------------------------------------------------------
+// CONFIG
+// ------------------------------------------------------------
 //
 
 var (
@@ -40,14 +39,14 @@ var (
 	fast2SMSKey   = os.Getenv("FAST2SMS_API_KEY")
 	phoneNumberID = os.Getenv("PHONE_NUMBER_ID")
 
-	msgOrderReceived = os.Getenv("MESSAGE_ID_ORDER_RECEIVED") // 10360
-	msgOrderShipped  = os.Getenv("MESSAGE_ID_ORDER_SHIPPED")  // 10363
+	msgOrderReceived = os.Getenv("MESSAGE_ID_ORDER_RECEIVED")
+	msgOrderShipped  = os.Getenv("MESSAGE_ID_ORDER_SHIPPED")
 )
 
 //
-// -------------------------------------------------------------------
-// Globals
-// -------------------------------------------------------------------
+// ------------------------------------------------------------
+// GLOBALS
+// ------------------------------------------------------------
 //
 
 var (
@@ -56,16 +55,16 @@ var (
 )
 
 //
-// -------------------------------------------------------------------
-// Utilities
-// -------------------------------------------------------------------
+// ------------------------------------------------------------
+// UTILITIES
+// ------------------------------------------------------------
 //
 
-func getEnv(key, def string) string {
-	if v := os.Getenv(key); v != "" {
+func getEnv(k, d string) string {
+	if v := os.Getenv(k); v != "" {
 		return v
 	}
-	return def
+	return d
 }
 
 func nowISO() string {
@@ -77,9 +76,9 @@ func todayDDMMYYYY() string {
 }
 
 //
-// -------------------------------------------------------------------
-// Logger
-// -------------------------------------------------------------------
+// ------------------------------------------------------------
+// LOGGER
+// ------------------------------------------------------------
 //
 
 func initLogger() error {
@@ -98,9 +97,9 @@ func initLogger() error {
 }
 
 //
-// -------------------------------------------------------------------
-// Storage Helpers
-// -------------------------------------------------------------------
+// ------------------------------------------------------------
+// STORAGE
+// ------------------------------------------------------------
 //
 
 func storeJSON(folder, name string, payload any) {
@@ -115,9 +114,9 @@ func storeJSON(folder, name string, payload any) {
 }
 
 //
-// -------------------------------------------------------------------
-// Idempotency Flags
-// -------------------------------------------------------------------
+// ------------------------------------------------------------
+// IDEMPOTENCY
+// ------------------------------------------------------------
 //
 
 func flagPath(orderID, state string) string {
@@ -135,9 +134,9 @@ func createFlag(p string) {
 }
 
 //
-// -------------------------------------------------------------------
-// Status Normalization
-// -------------------------------------------------------------------
+// ------------------------------------------------------------
+// STATUS
+// ------------------------------------------------------------
 //
 
 func normalizeStatus(s string) string {
@@ -152,17 +151,22 @@ func normalizeStatus(s string) string {
 }
 
 //
-// -------------------------------------------------------------------
-// Mautic Upsert
-// -------------------------------------------------------------------
+// ------------------------------------------------------------
+// MAUTIC
+// ------------------------------------------------------------
 //
 
 func mauticUpsert(payload map[string]any) error {
-	if mauticURL == "" || mauticUser == "" || mauticPass == "" {
-		return errors.New("mautic credentials missing")
+	if mauticURL == "" {
+		return errors.New("mautic url missing")
 	}
 
 	body, _ := json.Marshal(payload)
+
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // for internal mautic
+	}
+	client := &http.Client{Transport: tr, Timeout: 15 * time.Second}
 
 	req, err := http.NewRequest("POST", mauticURL, strings.NewReader(string(body)))
 	if err != nil {
@@ -172,7 +176,7 @@ func mauticUpsert(payload map[string]any) error {
 	req.SetBasicAuth(mauticUser, mauticPass)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -180,26 +184,19 @@ func mauticUpsert(payload map[string]any) error {
 
 	if resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(resp.Body)
-		return errors.New(string(b))
+		return fmt.Errorf("status=%d body=%s", resp.StatusCode, string(b))
 	}
 
 	return nil
 }
 
 //
-// -------------------------------------------------------------------
-// Fast2SMS WhatsApp
-// -------------------------------------------------------------------
+// ------------------------------------------------------------
+// WHATSAPP
+// ------------------------------------------------------------
 //
 
-func sendWhatsAppTemplate(
-	orderID string,
-	phone string,
-	templateID string,
-	variables string,
-	state string,
-) error {
-
+func sendWhatsApp(orderID, phone, templateID, variables, state string) error {
 	form := url.Values{}
 	form.Set("message_id", templateID)
 	form.Set("phone_number_id", phoneNumberID)
@@ -224,20 +221,20 @@ func sendWhatsAppTemplate(
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	b, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode >= 300 {
-		return errors.New(string(body))
+		return errors.New(string(b))
 	}
 
-	storeJSON("whatsapp", orderID+"_"+state, string(body))
+	storeJSON("whatsapp", orderID+"_"+state, string(b))
 	return nil
 }
 
 //
-// -------------------------------------------------------------------
-// Helpers
-// -------------------------------------------------------------------
+// ------------------------------------------------------------
+// HELPERS
+// ------------------------------------------------------------
 //
 
 func extractProducts(order map[string]any) []string {
@@ -245,172 +242,124 @@ func extractProducts(order map[string]any) []string {
 	if !ok {
 		return nil
 	}
-
-	var products []string
+	var names []string
 	for _, i := range items {
-		item := i.(map[string]any)
-		products = append(products, item["name"].(string))
+		m := i.(map[string]any)
+		names = append(names, m["name"].(string))
 	}
-	return products
+	return names
 }
 
 //
-// -------------------------------------------------------------------
-// HTTP Handlers
-// -------------------------------------------------------------------
+// ------------------------------------------------------------
+// HANDLERS
+// ------------------------------------------------------------
 //
 
-/*
-ROOT HANDLER – GOKWIK ABANDONED CART
-Matches Python payload EXACTLY
-*/
 func rootHandler(w http.ResponseWriter, r *http.Request) {
 	var payload map[string]any
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(w, "invalid json", 400)
-		return
-	}
+	_ = json.NewDecoder(r.Body).Decode(&payload)
 
 	customer := payload["customer"].(map[string]any)
 	cart := payload["cart"].(map[string]any)
-
 	email := customer["email"].(string)
 
-	mauticPayload := map[string]any{
-		"email":      email,
-		"firstname":  customer["firstname"],
-		"lastname":   customer["lastname"],
-		"mobile":     customer["phone"],
-		"lead_source": "gokwik",
+	logger.Printf("INFO | gokwik payload received | email=%s", email)
 
-		"cart_url":   cart["abc_url"],
+	mauticPayload := map[string]any{
+		"email": email,
+		"firstname": customer["firstname"],
+		"lastname": customer["lastname"],
+		"mobile": customer["phone"],
+		"lead_source": "gokwik",
+		"cart_url": cart["abc_url"],
 		"cart_value": cart["total_price"],
 		"drop_stage": cart["drop_stage"],
-
 		"last_abandoned_cart_date": nowISO(),
-
-		"tags": []string{
-			"source:gokwik",
-			"intent:abandoned-cart",
-		},
-
+		"tags": []string{"source:gokwik", "intent:abandoned-cart"},
 		"abc_cupon5_sent": false,
 		"abc1": false,
 		"abc2": false,
 		"abc3": false,
 	}
 
-	storeJSON("gokwik", uuid.New().String(), payload)
-	err = mauticUpsert(mauticPayload)
-	
-	if err == nil {
-		w.Write([]byte(`{"status":"ok"}`))
-		logger.Printf(
-			"INFO | mautic upsert abc successful | email=%s",
-			email,
-		)
+	if err := mauticUpsert(mauticPayload); err != nil {
+		logger.Printf("ERROR | mautic upsert failed | email=%s | err=%v", email, err)
 	} else {
-		logger.Printf(
-			"ERROR | mautic upsert abc failed | email=%s | error=%s",
-			email,
-			err.Error(),
-		)
+		logger.Printf("INFO | mautic upsert success | email=%s", email)
 	}
-	
-	// logger.Printf(
-    // "INFO | gokwik payload received | email=%s",
-    // email,
-  	// )
 
-	// w.Write([]byte(`{"status":"ok"}`))
+	storeJSON("gokwik", email+"_"+time.Now().Format("150405"), payload)
+	w.Write([]byte(`{"status":"ok"}`))
 }
 
-/*
-WOOCOMMERCE HANDLER – CUSTOMER PURCHASE
-Matches Python payload EXACTLY
-*/
 func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 	var order map[string]any
-	if err := json.NewDecoder(r.Body).Decode(&order); err != nil {
-		http.Error(w, "invalid json", 400)
-		return
-	}
+	_ = json.NewDecoder(r.Body).Decode(&order)
 
 	billing := order["billing"].(map[string]any)
-
-	email := billing["email"].(string)
-	phone := billing["phone"].(string)
 	orderID := fmt.Sprintf("%v", order["id"])
-	orderDate := todayDDMMYYYY()
+	status := normalizeStatus(fmt.Sprintf("%v", order["status"]))
+
+	logger.Printf(
+		"INFO | woocommerce payload received | order_id=%s | status=%s",
+		orderID,
+		order["status"],
+	)
 
 	mauticPayload := map[string]any{
-		"email": email,
-		"mobile": phone,
-
+		"email": billing["email"],
+		"mobile": billing["phone"],
 		"last_order_id": orderID,
-		"last_order_date": orderDate,
-		"first_order_date": orderDate,
-
+		"last_order_date": todayDDMMYYYY(),
+		"first_order_date": todayDDMMYYYY(),
 		"has_purchased": true,
 		"last_product_names": extractProducts(order),
-
 		"city": billing["city"],
 		"pincode": billing["postcode"],
-
 		"lead_source": "woocommerce",
-
-		"tags": []string{
-			"source:website",
-			"type:website-customer",
-		},
-
+		"tags": []string{"source:website", "type:website-customer"},
 		"abc_cupon5_sent": true,
 		"abc1": true,
 		"abc2": true,
 		"abc3": true,
 	}
 
-	storeJSON("woocommerce", uuid.New().String(), order)
-	err = mauticUpsert(mauticPayload)
-	
-	if err == nil {
-		w.Write([]byte(`{"status":"ok"}`))
-		logger.Printf(
-			"INFO | mautic upsert order successful | email=%s",
-			email,
-		)
+	if err := mauticUpsert(mauticPayload); err != nil {
+		logger.Printf("ERROR | mautic upsert failed | order_id=%s | err=%v", orderID, err)
 	} else {
-		logger.Printf(
-			"ERROR | mautic upsert order failed | email=%s | error=%s",
-			email,
-			err.Error(),
-		)
+		logger.Printf("INFO | mautic upsert success | order_id=%s", orderID)
 	}
-
-	status := normalizeStatus(fmt.Sprintf("%v", order["status"]))
 
 	switch status {
 
 	case "processing":
 		flag := flagPath(orderID, "processing")
-		if !flagExists(flag) {
+		if flagExists(flag) {
+			logger.Printf("INFO | whatsapp skipped | order_id=%s | state=processing | reason=duplicate", orderID)
+		} else {
 			vars := fmt.Sprintf(
 				"%s|%s|%s|Rs. %v/-|%s",
 				billing["first_name"],
 				orderID,
-				orderDate,
+				todayDDMMYYYY(),
 				order["total"],
 				strings.ToUpper(order["payment_method_title"].(string)),
 			)
 
-			if err := sendWhatsAppTemplate(orderID, phone, msgOrderReceived, vars, "processing"); err == nil {
+			if err := sendWhatsApp(orderID, billing["phone"].(string), msgOrderReceived, vars, "processing"); err != nil {
+				logger.Printf("ERROR | whatsapp failed | order_id=%s | state=processing | err=%v", orderID, err)
+			} else {
 				createFlag(flag)
+				logger.Printf("INFO | whatsapp sent | order_id=%s | state=processing", orderID)
 			}
 		}
 
 	case "fulfilled":
 		flag := flagPath(orderID, "fulfilled")
-		if !flagExists(flag) {
+		if flagExists(flag) {
+			logger.Printf("INFO | whatsapp skipped | order_id=%s | state=fulfilled | reason=duplicate", orderID)
+		} else {
 			vars := fmt.Sprintf(
 				"%s|%s|%s",
 				billing["first_name"],
@@ -418,19 +367,23 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 				todayDDMMYYYY(),
 			)
 
-			if err := sendWhatsAppTemplate(orderID, phone, msgOrderShipped, vars, "fulfilled"); err == nil {
+			if err := sendWhatsApp(orderID, billing["phone"].(string), msgOrderShipped, vars, "fulfilled"); err != nil {
+				logger.Printf("ERROR | whatsapp failed | order_id=%s | state=fulfilled | err=%v", orderID, err)
+			} else {
 				createFlag(flag)
-			} // add else error logging
+				logger.Printf("INFO | whatsapp sent | order_id=%s | state=fulfilled", orderID)
+			}
 		}
 	}
 
-	// w.Write([]byte(`{"status":"ok"}`))
+	storeJSON("woocommerce", orderID, order)
+	w.Write([]byte(`{"status":"ok"}`))
 }
 
 //
-// -------------------------------------------------------------------
+// ------------------------------------------------------------
 // MAIN
-// -------------------------------------------------------------------
+// ------------------------------------------------------------
 //
 
 func main() {
@@ -448,14 +401,14 @@ func main() {
 	})
 
 	server := &http.Server{
-		Addr:    ":8080",
+		Addr: ":8080",
 		Handler: mux,
 	}
 
 	go func() {
 		logger.Println("INFO | server started on :8080")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Fatal(err)
+			logger.Fatalf("server error: %v", err)
 		}
 	}()
 
@@ -466,6 +419,5 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	server.Shutdown(ctx)
-
 	logger.Println("INFO | shutdown complete")
 }
