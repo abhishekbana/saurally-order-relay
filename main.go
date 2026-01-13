@@ -314,7 +314,7 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 		"last_order_date": todayDDMMYYYY(),
 		"first_order_date": todayDDMMYYYY(),
 		"has_purchased": true,
-		"last_product_names": extractProducts(order),
+		"last_product_names": strings.Join(extractProducts(order), ", "),
 		"city": billing["city"],
 		"pincode": billing["postcode"],
 		"lead_source": "woocommerce",
