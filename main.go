@@ -92,7 +92,8 @@ func initLogger() error {
 		return err
 	}
 
-	logger = log.New(f, "", log.LstdFlags)
+	mw := io.MultiWriter(os.Stdout, f)
+	logger = log.New(mw, "", log.LstdFlags)
 	logger.Println("INFO | logger initialized")
 	return nil
 }
