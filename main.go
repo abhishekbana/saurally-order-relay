@@ -267,32 +267,87 @@ func getMap(m map[string]any, key string) (map[string]any, bool) {
 // ------------------------------------------------------------
 //
 
+// for gokwik
 func rootHandler(w http.ResponseWriter, r *http.Request) {
-	var payload map[string]any
-	_ = json.NewDecoder(r.Body).Decode(&payload)
 
-	customer := payload["customer"].(map[string]any)
-	cart := payload["cart"].(map[string]any)
-	email := customer["email"].(string)
+	// Accept JSON only
+	if !strings.Contains(r.Header.Get("Content-Type"), "application/json") {
+		logger.Printf("INFO | root | non-json request ignored")
+		http.Error(w, "invalid content type", http.StatusBadRequest)
+		return
+	}
+
+	var payload map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		logger.Printf("ERROR | root | invalid json | err=%v", err)
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+
+	// ---- customer validation ----
+	customerRaw, ok := payload["customer"]
+	if !ok || customerRaw == nil {
+		logger.Printf("ERROR | root | missing customer object")
+		http.Error(w, "missing customer", http.StatusBadRequest)
+		return
+	}
+
+	customer, ok := customerRaw.(map[string]any)
+	if !ok {
+		logger.Printf("ERROR | root | invalid customer object")
+		http.Error(w, "invalid customer", http.StatusBadRequest)
+		return
+	}
+
+	email, _ := customer["email"].(string)
+	if email == "" {
+		logger.Printf("ERROR | root | missing email")
+		http.Error(w, "missing email", http.StatusBadRequest)
+		return
+	}
+
+	firstName, _ := customer["firstname"].(string)
+	lastName, _ := customer["lastname"].(string)
+	phone, _ := customer["phone"].(string)
+
+	// ---- cart validation ----
+	cartRaw, ok := payload["cart"]
+	if !ok || cartRaw == nil {
+		logger.Printf("ERROR | root | missing cart object | email=%s", email)
+		http.Error(w, "missing cart", http.StatusBadRequest)
+		return
+	}
+
+	cart, ok := cartRaw.(map[string]any)
+	if !ok {
+		logger.Printf("ERROR | root | invalid cart object | email=%s", email)
+		http.Error(w, "invalid cart", http.StatusBadRequest)
+		return
+	}
+
+	cartURL, _ := cart["abc_url"].(string)
+	cartValue, _ := cart["total_price"]
+	dropStage, _ := cart["drop_stage"].(string)
 
 	logger.Printf("INFO | gokwik payload received | email=%s", email)
 
+	// ---- mautic payload ----
 	mauticPayload := map[string]any{
-		"email": email,
-		"firstname": customer["firstname"],
-		"lastname": customer["lastname"],
-		"mobile": customer["phone"],
-		"phone": customer["phone"],
-		"lead_source": "gokwik",
-		"cart_url": cart["abc_url"],
-		"cart_value": cart["total_price"],
-		"drop_stage": cart["drop_stage"],
-		"last_abandoned_cart_date": nowISO(),
-		"tags": []string{"source:gokwik", "intent:abandoned-cart"},
-		"abc_cupon5_sent": false,
-		"abc1": false,
-		"abc2": false,
-		"abc3": false,
+		"email":                      email,
+		"firstname":                  firstName,
+		"lastname":                   lastName,
+		"mobile":                     phone,
+		"phone":                      phone,
+		"lead_source":                "gokwik",
+		"cart_url":                   cartURL,
+		"cart_value":                 cartValue,
+		"drop_stage":                 dropStage,
+		"last_abandoned_cart_date":   nowISO(),
+		"tags":                       "source:gokwik,intent:abandoned-cart",
+		"abc_cupon5_sent":            false,
+		"abc1":                       false,
+		"abc2":                       false,
+		"abc3":                       false,
 	}
 
 	if err := mauticUpsert(mauticPayload); err != nil {
@@ -301,9 +356,34 @@ func rootHandler(w http.ResponseWriter, r *http.Request) {
 		logger.Printf("INFO | mautic upsert success | email=%s", email)
 	}
 
-	storeJSON("gokwik", email+"_"+time.Now().Format("150405"), payload)
+	if err := storeJSON("gokwik", email+"_"+time.Now().Format("150405"), payload); err != nil {
+		logger.Printf("ERROR | failed to store gokwik payload | email=%s | err=%v", email, err)
+	}
+
+	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"status":"ok"}`))
 }
+
+
+	// mauticPayload := map[string]any{
+	// 	"email": email,
+	// 	"firstname": customer["firstname"],
+	// 	"lastname": customer["lastname"],
+	// 	"mobile": customer["phone"],
+	// 	"phone": customer["phone"],
+	// 	"lead_source": "gokwik",
+	// 	"cart_url": cart["abc_url"],
+	// 	"cart_value": cart["total_price"],
+	// 	"drop_stage": cart["drop_stage"],
+	// 	"last_abandoned_cart_date": nowISO(),
+	// 	"tags": []string{"source:gokwik", "intent:abandoned-cart"},
+	// 	"abc_cupon5_sent": false,
+	// 	"abc1": false,
+	// 	"abc2": false,
+	// 	"abc3": false,
+	// }
+
+
 
 func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 	// var order map[string]any
