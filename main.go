@@ -276,13 +276,20 @@ func getMap(m map[string]any, key string) (map[string]any, bool) {
 	return mv, ok
 }
 
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max]
+}
+
 //
 // ------------------------------------------------------------
 // HANDLERS
 // ------------------------------------------------------------
 //
 
-// for gokwik
+// GoKwik ABC handler
 func rootHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Accept JSON only
@@ -379,27 +386,7 @@ func rootHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"status":"ok"}`))
 }
 
-
-	// mauticPayload := map[string]any{
-	// 	"email": email,
-	// 	"firstname": customer["firstname"],
-	// 	"lastname": customer["lastname"],
-	// 	"mobile": customer["phone"],
-	// 	"phone": customer["phone"],
-	// 	"lead_source": "gokwik",
-	// 	"cart_url": cart["abc_url"],
-	// 	"cart_value": cart["total_price"],
-	// 	"drop_stage": cart["drop_stage"],
-	// 	"last_abandoned_cart_date": nowISO(),
-	// 	"tags": []string{"source:gokwik", "intent:abandoned-cart"},
-	// 	"abc_cupon5_sent": false,
-	// 	"abc1": false,
-	// 	"abc2": false,
-	// 	"abc3": false,
-	// }
-
-
-
+// Website order data handler
 func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 	// var order map[string]any
 	// _ = json.NewDecoder(r.Body).Decode(&order)
@@ -471,8 +458,8 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 		"email": email,
 		"mobile": phone,
 		"phone": phone,
-		"address1": addressLine1,
-		"address2": addressLine2,
+		"address1": truncate(addressLine1, 64),
+		"address2": truncate(addressLine2, 64),
 		"city": billing["city"],
 		"zipcode": billing["postcode"],
 		"last_order_id": orderID,
