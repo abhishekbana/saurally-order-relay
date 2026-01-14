@@ -250,6 +250,15 @@ func extractProducts(order map[string]any) []string {
 	return names
 }
 
+func getMap(m map[string]any, key string) (map[string]any, bool) {
+	v, ok := m[key]
+	if !ok || v == nil {
+		return nil, false
+	}
+	mv, ok := v.(map[string]any)
+	return mv, ok
+}
+
 //
 // ------------------------------------------------------------
 // HANDLERS
@@ -297,7 +306,22 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 	var order map[string]any
 	_ = json.NewDecoder(r.Body).Decode(&order)
 
-	billing := order["billing"].(map[string]any)
+	billing, ok := getMap(order, "billing")
+	if !ok {
+		logger.Printf(
+			"ERROR | woocommerce payload invalid | order_id=%v | reason=billing_missing",
+			order["id"],
+		)
+		http.Error(w, "invalid payload: billing missing", http.StatusBadRequest)
+		return
+	}
+
+	email, _ := billing["email"].(string)
+	phone, _ := billing["phone"].(string)
+	firstName, _ := billing["first_name"].(string)
+	lastName, _ := billing["last_name"].(string)
+
+
 	orderID := fmt.Sprintf("%v", order["id"])
 	status := normalizeStatus(fmt.Sprintf("%v", order["status"]))
 
@@ -308,8 +332,10 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 	)
 
 	mauticPayload := map[string]any{
-		"email": billing["email"],
-		"mobile": billing["phone"],
+		"firstname": firstName,
+		"lastname": lastName,
+		"email": email,
+		"mobile": phone,
 		"last_order_id": orderID,
 		"last_order_date": todayDDMMYYYY(),
 		// "first_order_date": todayDDMMYYYY(),
