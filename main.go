@@ -17,6 +17,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"bytes"
 )
 
 //
@@ -307,7 +308,7 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 	// _ = json.NewDecoder(r.Body).Decode(&order)
 
 	// logger.Printf("DEBUG | Order Received - Raw Data - %s", order)
-	
+
     // Read raw body
     rawBody, err := io.ReadAll(r.Body)
     if err != nil {
