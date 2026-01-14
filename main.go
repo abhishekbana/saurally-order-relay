@@ -92,7 +92,7 @@ func initLogger() error {
 		return err
 	}
 
-	logger = log.New(f, "", log.LstdFlags|log.LUTC)
+	logger = log.New(f, "", log.LstdFlags)
 	logger.Println("INFO | logger initialized")
 	return nil
 }

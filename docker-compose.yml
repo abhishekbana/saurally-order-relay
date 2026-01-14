@@ -7,6 +7,9 @@ services:
 
     working_dir: /app
 
+    environment:
+      - TZ=Asia/Kolkata
+
     env_file:
       - .env
 
