@@ -104,16 +104,31 @@ func initLogger() error {
 // ------------------------------------------------------------
 //
 
-func storeJSON(folder, name string, payload any) {
-	fileLock.Lock()
-	defer fileLock.Unlock()
+func storeJSON(prefix, name string, data any) error {
+	path := filepath.Join(dataDir, prefix)
+	if err := os.MkdirAll(path, 0755); err != nil {
+		return err
+	}
 
-	dir := filepath.Join(dataDir, folder)
-	_ = os.MkdirAll(dir, 0755)
+	file := filepath.Join(path, name+".json")
+	b, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return err
+	}
 
-	b, _ := json.MarshalIndent(payload, "", "  ")
-	_ = os.WriteFile(filepath.Join(dir, name+".json"), b, 0644)
+	return os.WriteFile(file, b, 0644)
 }
+
+// func storeJSON(folder, name string, payload any) {
+// 	fileLock.Lock()
+// 	defer fileLock.Unlock()
+
+// 	dir := filepath.Join(dataDir, folder)
+// 	_ = os.MkdirAll(dir, 0755)
+
+// 	b, _ := json.MarshalIndent(payload, "", "  ")
+// 	_ = os.WriteFile(filepath.Join(dir, name+".json"), b, 0644)
+// }
 
 //
 // ------------------------------------------------------------
