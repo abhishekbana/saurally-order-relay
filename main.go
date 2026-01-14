@@ -303,8 +303,31 @@ func rootHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
-	var order map[string]any
-	_ = json.NewDecoder(r.Body).Decode(&order)
+	// var order map[string]any
+	// _ = json.NewDecoder(r.Body).Decode(&order)
+
+	// logger.Printf("DEBUG | Order Received - Raw Data - %s", order)
+	
+    // Read raw body
+    rawBody, err := io.ReadAll(r.Body)
+    if err != nil {
+        logger.Printf("ERROR | woocommerce | failed to read body | err=%v", err)
+        http.Error(w, "invalid body", http.StatusBadRequest)
+        return
+    }
+
+    // Log raw JSON exactly as received
+    logger.Printf("DEBUG | woocommerce raw payload | %s", string(rawBody))
+
+    // Restore body for JSON decoding
+    r.Body = io.NopCloser(bytes.NewBuffer(rawBody))
+
+    var order map[string]any
+    if err := json.NewDecoder(r.Body).Decode(&order); err != nil {
+        logger.Printf("ERROR | woocommerce | json decode failed | err=%v", err)
+        http.Error(w, "invalid json", http.StatusBadRequest)
+        return
+    }
 
 	billing, ok := getMap(order, "billing")
 	if !ok {
