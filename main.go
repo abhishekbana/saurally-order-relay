@@ -356,6 +356,8 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 	phone, _ := billing["phone"].(string)
 	firstName, _ := billing["first_name"].(string)
 	lastName, _ := billing["last_name"].(string)
+	addressLine1, _ := billing["address_1"].(string)
+	addressLine2, _ := billing["address_2"].(string)
 
 
 	orderID := fmt.Sprintf("%v", order["id"])
@@ -373,14 +375,16 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 		"email": email,
 		"mobile": phone,
 		"phone": phone,
+		"address1": addressLine1,
+		"address2": addressLine2,
+		"city": billing["city"],
+		"zipcode": billing["postcode"],
 		"last_order_id": orderID,
 		"last_order_date": todayDDMMYYYY(),
 		// "first_order_date": todayDDMMYYYY(),
 		"last_order_value": order["total"],
 		"has_purchased": true,
 		"last_product_names": strings.Join(extractProducts(order), ", "),
-		"city": billing["city"],
-		"zipcode": billing["postcode"],
 		"lead_source": "woocommerce",
 		"tags": []string{"source:website", "type:website-customer"},
 		"abc_cupon5_sent": true,
@@ -451,37 +455,130 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 //
 
 func main() {
+
+	// =========================================================
+	// 1. Initialize logger FIRST
+	// ---------------------------------------------------------
+	// Logging must be available before anything else,
+	// otherwise startup failures are invisible.
+	// =========================================================
 	if err := initLogger(); err != nil {
-		log.Fatal(err)
+		// Fallback to stderr because file logger failed
+		log.Fatalf("fatal: failed to initialize logger: %v", err)
 	}
 
-	_ = os.MkdirAll(dataDir, 0755)
+	logger.Println("INFO | application starting")
 
+	// =========================================================
+	// 2. Prepare required filesystem structure
+	// ---------------------------------------------------------
+	// Ensure persistent directories exist BEFORE handling
+	// any traffic. If this fails, the app must not start.
+	// =========================================================
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		logger.Fatalf("fatal: failed to create data directory: %v", err)
+	}
+
+	// =========================================================
+	// 3. Configure HTTP routes
+	// ---------------------------------------------------------
+	// Use net/http directly for clarity and predictability.
+	// No middleware magic, no hidden behavior.
+	// =========================================================
 	mux := http.NewServeMux()
+
 	mux.HandleFunc("/", rootHandler)
 	mux.HandleFunc("/woocommerce", woocommerceHandler)
+
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+		// Explicit status is important for load balancers
+		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
 
+	// =========================================================
+	// 4. Create hardened HTTP server
+	// ---------------------------------------------------------
+	// Timeouts are NOT optional for internet-facing services.
+	// These protect against:
+	// - slow clients
+	// - hung connections
+	// - resource exhaustion
+	// =========================================================
 	server := &http.Server{
-		Addr: ":8080",
-		Handler: mux,
+		Addr:              ":8080",
+		Handler:           mux,
+
+		// Max time allowed to read request headers/body
+		ReadTimeout:       10 * time.Second,
+
+		// Max time allowed to read headers only
+		ReadHeaderTimeout: 5 * time.Second,
+
+		// Max time allowed to write response
+		WriteTimeout:      15 * time.Second,
+
+		// Max time to keep idle connections open
+		IdleTimeout:       60 * time.Second,
 	}
 
+	// Channel used to capture fatal server startup/runtime errors
+	serverErr := make(chan error, 1)
+
+	// =========================================================
+	// 5. Start HTTP server asynchronously
+	// ---------------------------------------------------------
+	// The main goroutine remains free to listen for OS signals.
+	// =========================================================
 	go func() {
-		logger.Println("INFO | server started on :8080")
+		logger.Println("INFO | server listening on :8080")
+
+		// ListenAndServe only returns on error or shutdown
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Fatalf("server error: %v", err)
+			serverErr <- err
 		}
 	}()
 
+	// =========================================================
+	// 6. Listen for termination signals
+	// ---------------------------------------------------------
+	// SIGTERM is what Docker/Kubernetes sends.
+	// SIGINT is Ctrl+C (local/dev).
+	// =========================================================
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-	<-stop
 
+	// =========================================================
+	// 7. Block until shutdown condition
+	// ---------------------------------------------------------
+	// We exit on:
+	// - OS shutdown signal
+	// - Fatal server error
+	// =========================================================
+	select {
+
+	case sig := <-stop:
+		logger.Printf("INFO | shutdown requested | signal=%s", sig)
+
+	case err := <-serverErr:
+		// This indicates a startup or runtime failure
+		logger.Fatalf("FATAL | http server error | err=%v", err)
+	}
+
+	// =========================================================
+	// 8. Graceful shutdown
+	// ---------------------------------------------------------
+	// Allow in-flight requests to finish.
+	// New connections are rejected immediately.
+	// =========================================================
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	server.Shutdown(ctx)
-	logger.Println("INFO | shutdown complete")
+
+	if err := server.Shutdown(ctx); err != nil {
+		logger.Printf("ERROR | graceful shutdown failed | err=%v", err)
+	} else {
+		logger.Println("INFO | server shutdown completed cleanly")
+	}
+
+	logger.Println("INFO | application stopped")
 }
