@@ -281,6 +281,7 @@ func rootHandler(w http.ResponseWriter, r *http.Request) {
 		"firstname": customer["firstname"],
 		"lastname": customer["lastname"],
 		"mobile": customer["phone"],
+		"phone": customer["phone"],
 		"lead_source": "gokwik",
 		"cart_url": cart["abc_url"],
 		"cart_value": cart["total_price"],
@@ -308,6 +309,17 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 	// _ = json.NewDecoder(r.Body).Decode(&order)
 
 	// logger.Printf("DEBUG | Order Received - Raw Data - %s", order)
+
+	ct := r.Header.Get("Content-Type")
+    if !strings.Contains(ct, "application/json") {
+        logger.Printf(
+            "INFO | woocommerce non-json webhook ignored | content-type=%s",
+            ct,
+        )
+        w.WriteHeader(http.StatusOK)
+        w.Write([]byte(`{"status":"ignored"}`))
+        return
+    }
 
     // Read raw body
     rawBody, err := io.ReadAll(r.Body)
@@ -360,6 +372,7 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 		"lastname": lastName,
 		"email": email,
 		"mobile": phone,
+		"phone": phone,
 		"last_order_id": orderID,
 		"last_order_date": todayDDMMYYYY(),
 		// "first_order_date": todayDDMMYYYY(),
@@ -367,7 +380,7 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 		"has_purchased": true,
 		"last_product_names": strings.Join(extractProducts(order), ", "),
 		"city": billing["city"],
-		"pincode": billing["postcode"],
+		"zipcode": billing["postcode"],
 		"lead_source": "woocommerce",
 		"tags": []string{"source:website", "type:website-customer"},
 		"abc_cupon5_sent": true,
