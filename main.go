@@ -299,6 +299,20 @@ func abcHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ---- read raw body safely ----
+	rawBody, err := io.ReadAll(r.Body)
+	if err != nil {
+		logger.Printf("ERROR | abc | failed to read body | err=%v", err)
+		http.Error(w, "failed to read body", http.StatusBadRequest)
+		return
+	}
+
+	// Log raw payload (single line, safe)
+	logger.Printf("DEBUG | abc raw payload | %s", string(rawBody))
+
+	// Restore body for JSON decoding
+	r.Body = io.NopCloser(bytes.NewBuffer(rawBody))
+	
 	var payload map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		logger.Printf("ERROR | abc | invalid json | err=%v", err)
