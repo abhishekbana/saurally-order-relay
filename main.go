@@ -307,12 +307,12 @@ func abcHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Log raw payload (single line, safe)
+	// Log raw payload (single line)
 	logger.Printf("DEBUG | abc raw payload | %s", string(rawBody))
 
 	// Restore body for JSON decoding
 	r.Body = io.NopCloser(bytes.NewBuffer(rawBody))
-	
+
 	var payload map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		logger.Printf("ERROR | abc | invalid json | err=%v", err)
@@ -320,10 +320,33 @@ func abcHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ---- customer validation ----
-	customerRaw, ok := payload["customer"]
+	// ---- carts validation (GoKwik schema) ----
+	cartsRaw, ok := payload["carts"]
+	if !ok || cartsRaw == nil {
+		logger.Printf("ERROR | abc | missing carts array")
+		http.Error(w, "missing carts", http.StatusBadRequest)
+		return
+	}
+
+	carts, ok := cartsRaw.([]any)
+	if !ok || len(carts) == 0 {
+		logger.Printf("ERROR | abc | carts empty or invalid")
+		http.Error(w, "invalid carts", http.StatusBadRequest)
+		return
+	}
+
+	// Use first cart (current GoKwik behaviour)
+	cart, ok := carts[0].(map[string]any)
+	if !ok {
+		logger.Printf("ERROR | abc | cart[0] invalid")
+		http.Error(w, "invalid cart", http.StatusBadRequest)
+		return
+	}
+
+	// ---- customer extraction from cart ----
+	customerRaw, ok := cart["customer"]
 	if !ok || customerRaw == nil {
-		logger.Printf("ERROR | abc | missing customer object")
+		logger.Printf("ERROR | abc | missing customer inside cart")
 		http.Error(w, "missing customer", http.StatusBadRequest)
 		return
 	}
@@ -346,44 +369,34 @@ func abcHandler(w http.ResponseWriter, r *http.Request) {
 	lastName, _ := customer["lastname"].(string)
 	phone, _ := customer["phone"].(string)
 
-	// ---- cart validation ----
-	cartRaw, ok := payload["cart"]
-	if !ok || cartRaw == nil {
-		logger.Printf("ERROR | abc | missing cart object | email=%s", email)
-		http.Error(w, "missing cart", http.StatusBadRequest)
-		return
-	}
-
-	cart, ok := cartRaw.(map[string]any)
-	if !ok {
-		logger.Printf("ERROR | abc | invalid cart object | email=%s", email)
-		http.Error(w, "invalid cart", http.StatusBadRequest)
-		return
-	}
-
+	// ---- cart fields ----
 	cartURL, _ := cart["abc_url"].(string)
 	cartValue, _ := cart["total_price"]
 	dropStage, _ := cart["drop_stage"].(string)
 
-	logger.Printf("INFO | gokwik payload received | email=%s", email)
+	logger.Printf(
+		"INFO | abc payload received | email=%s | drop_stage=%s",
+		email,
+		dropStage,
+	)
 
 	// ---- mautic payload ----
 	mauticPayload := map[string]any{
-		"email":                      email,
-		"firstname":                  firstName,
-		"lastname":                   lastName,
-		"mobile":                     phone,
-		"phone":                      phone,
-		"lead_source":                "gokwik",
-		"cart_url":                   cartURL,
-		"cart_value":                 cartValue,
-		"drop_stage":                 dropStage,
-		"last_abandoned_cart_date":   nowISO(),
-		"tags":                       "source:gokwik,intent:abandoned-cart",
-		"abc_cupon5_sent":            false,
-		"abc1":                       false,
-		"abc2":                       false,
-		"abc3":                       false,
+		"email":                    email,
+		"firstname":                firstName,
+		"lastname":                 lastName,
+		"mobile":                   phone,
+		"phone":                    phone,
+		"lead_source":              "gokwik",
+		"cart_url":                 cartURL,
+		"cart_value":               cartValue,
+		"drop_stage":               dropStage,
+		"last_abandoned_cart_date": nowISO(),
+		"tags":                     "source:gokwik,intent:abandoned-cart",
+		"abc_cupon5_sent":          false,
+		"abc1":                     false,
+		"abc2":                     false,
+		"abc3":                     false,
 	}
 
 	if err := mauticUpsert(mauticPayload); err != nil {
