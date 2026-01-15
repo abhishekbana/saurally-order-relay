@@ -290,18 +290,18 @@ func truncate(s string, max int) string {
 //
 
 // GoKwik ABC handler
-func rootHandler(w http.ResponseWriter, r *http.Request) {
+func abcHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Accept JSON only
 	if !strings.Contains(r.Header.Get("Content-Type"), "application/json") {
-		logger.Printf("INFO | root | non-json request ignored")
+		logger.Printf("INFO | abc | non-json request ignored")
 		http.Error(w, "invalid content type", http.StatusBadRequest)
 		return
 	}
 
 	var payload map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		logger.Printf("ERROR | root | invalid json | err=%v", err)
+		logger.Printf("ERROR | abc | invalid json | err=%v", err)
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
@@ -309,21 +309,21 @@ func rootHandler(w http.ResponseWriter, r *http.Request) {
 	// ---- customer validation ----
 	customerRaw, ok := payload["customer"]
 	if !ok || customerRaw == nil {
-		logger.Printf("ERROR | root | missing customer object")
+		logger.Printf("ERROR | abc | missing customer object")
 		http.Error(w, "missing customer", http.StatusBadRequest)
 		return
 	}
 
 	customer, ok := customerRaw.(map[string]any)
 	if !ok {
-		logger.Printf("ERROR | root | invalid customer object")
+		logger.Printf("ERROR | abc | invalid customer object")
 		http.Error(w, "invalid customer", http.StatusBadRequest)
 		return
 	}
 
 	email, _ := customer["email"].(string)
 	if email == "" {
-		logger.Printf("ERROR | root | missing email")
+		logger.Printf("ERROR | abc | missing email")
 		http.Error(w, "missing email", http.StatusBadRequest)
 		return
 	}
@@ -335,14 +335,14 @@ func rootHandler(w http.ResponseWriter, r *http.Request) {
 	// ---- cart validation ----
 	cartRaw, ok := payload["cart"]
 	if !ok || cartRaw == nil {
-		logger.Printf("ERROR | root | missing cart object | email=%s", email)
+		logger.Printf("ERROR | abc | missing cart object | email=%s", email)
 		http.Error(w, "missing cart", http.StatusBadRequest)
 		return
 	}
 
 	cart, ok := cartRaw.(map[string]any)
 	if !ok {
-		logger.Printf("ERROR | root | invalid cart object | email=%s", email)
+		logger.Printf("ERROR | abc | invalid cart object | email=%s", email)
 		http.Error(w, "invalid cart", http.StatusBadRequest)
 		return
 	}
@@ -570,13 +570,19 @@ func main() {
 	// =========================================================
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/", rootHandler)
+	mux.HandleFunc("/abc", abcHandler)
 	mux.HandleFunc("/woocommerce", woocommerceHandler)
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
-		// Explicit status is important for load balancers
+		// just in case if I wish to use a load balancer
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
+	})
+
+	// Blocks all requests at root or unknown paths
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		logger.Printf("INFO | blocked root request | ip=%s | path=%s", r.RemoteAddr, r.URL.Path)
+		http.NotFound(w, r)
 	})
 
 	// =========================================================
