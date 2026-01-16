@@ -588,7 +588,7 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 		fmt.Sprintf(
 			"📦 New Order\nOrder ID: %s\nAmount: %s\nPayment: %s",
 			orderID,
-			total,
+			order["total"],
 			paymentMethod,
 		),
 	)
