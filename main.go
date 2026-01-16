@@ -294,7 +294,46 @@ func sendTelegram(message string) {
 	}()
 }
 
+func sendTelegramPlain(message string) {
+	if os.Getenv("TELEGRAM_ENABLED") != "true" {
+		return
+	}
 
+	token := os.Getenv("TELEGRAM_BOT_TOKEN")
+	chatID := os.Getenv("TELEGRAM_CHAT_ID")
+
+	if token == "" || chatID == "" {
+		logger.Println("WARN | telegram | missing config")
+		return
+	}
+
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token)
+
+	payload := map[string]string{
+		"chat_id": chatID,
+		"text":    message,
+	}
+
+	body, _ := json.Marshal(payload)
+
+	go func() {
+		resp, err := http.Post(url, "application/json", bytes.NewBuffer(body))
+		if err != nil {
+			logger.Printf("ERROR | telegram | send failed | err=%v", err)
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode >= 300 {
+			respBody, _ := io.ReadAll(resp.Body)
+			logger.Printf(
+				"ERROR | telegram | api error | status=%d | body=%s",
+				resp.StatusCode,
+				string(respBody),
+			)
+		}
+	}()
+}
 
 //
 // ------------------------------------------------------------
@@ -528,7 +567,7 @@ func abcHandler(w http.ResponseWriter, r *http.Request) {
 				cart["cart_id"],
 			)
 
-			sendTelegram(telegramMessage)
+			sendTelegramPlain(telegramMessage)
 
 		} else {
 			logger.Printf(
