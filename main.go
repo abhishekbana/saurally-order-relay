@@ -398,6 +398,12 @@ func abcHandler(w http.ResponseWriter, r *http.Request) {
 		isAbandoned, _ := cart["is_abandoned"].(bool)
 
 		logger.Printf(
+			"DEBUG | abc | is_abandoned raw=%v type=%T",
+			cart["is_abandoned"],
+			cart["is_abandoned"],
+		)
+
+		logger.Printf(
 			"DEBUG | abc | cart flags | cart_id=%v is_abandoned=%v",
 			cart["cart_id"],
 			isAbandoned,
