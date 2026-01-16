@@ -28,7 +28,16 @@ import (
 
 var (
 	logFile = getEnv("LOG_FILE", "/data/logs/app.log")
-	dataDir = getEnv("DATA_DIR", "/data/storage")
+	// dataDir = getEnv("DATA_DIR", "/data/storage")
+
+	dataDir    = "/data"
+	storageDir = filepath.Join(dataDir, "storage")
+
+	gokwikDir      = filepath.Join(storageDir, "gokwik")
+	woocommerceDir = filepath.Join(storageDir, "woocommerce")
+	whatsappDir    = filepath.Join(storageDir, "whatsapp")
+	eventsDir      = filepath.Join(storageDir, "events")
+	errorsDir      = filepath.Join(storageDir, "errors")
 
 	// Mautic
 	mauticURL  = os.Getenv("MAUTIC_URL")
@@ -104,19 +113,21 @@ func initLogger() error {
 // ------------------------------------------------------------
 //
 
-func storeJSON(prefix, name string, data any) error {
-	path := filepath.Join(dataDir, prefix)
-	if err := os.MkdirAll(path, 0755); err != nil {
+func storeJSON(category, name string, payload any) error {
+	dir := filepath.Join(storageDir, category)
+
+	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
 
-	file := filepath.Join(path, name+".json")
-	b, err := json.MarshalIndent(data, "", "  ")
+	path := filepath.Join(dir, name+".json")
+
+	b, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
 		return err
 	}
 
-	return os.WriteFile(file, b, 0644)
+	return os.WriteFile(path, b, 0644)
 }
 
 //
@@ -126,7 +137,7 @@ func storeJSON(prefix, name string, data any) error {
 //
 
 func flagPath(orderID, state string) string {
-	return filepath.Join(dataDir, "flags", orderID+"_"+state)
+	return filepath.Join(storageDir, "flags", orderID+"_"+state)
 }
 
 func flagExists(p string) bool {
@@ -233,7 +244,7 @@ func sendWhatsApp(orderID, phone, templateID, variables, state string) error {
 		return errors.New(string(b))
 	}
 
-	storeJSON("whatsapp", orderID+"_"+state, string(b))
+	storeJSON(whatsappDir, orderID+"_"+state, string(b))
 	return nil
 }
 
@@ -326,6 +337,32 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max]
+}
+
+// isDuplicateEvent ensures each order+status is processed once
+// Example key: order_51281_processing
+func isDuplicateEvent(key string) bool {
+	eventPath := filepath.Join(eventsDir, key)
+
+	// Already processed
+	if _, err := os.Stat(eventPath); err == nil {
+		return true
+	}
+
+	// Ensure directory exists
+	if err := os.MkdirAll(eventsDir, 0755); err != nil {
+		logger.Printf("ERROR | events | mkdir failed | err=%v", err)
+		return false // fail-open
+	}
+
+	// Persist marker
+	_ = os.WriteFile(
+		eventPath,
+		[]byte(time.Now().Format(time.RFC3339)),
+		0644,
+	)
+
+	return false
 }
 
 //
@@ -536,7 +573,7 @@ func abcHandler(w http.ResponseWriter, r *http.Request) {
 
 		// ---- persist raw cart ----
 		if err := storeJSON(
-			"gokwik",
+			gokwikDir,
 			fmt.Sprintf("%s_%s", email, time.Now().Format("150405")),
 			cart,
 		); err != nil {
@@ -602,6 +639,17 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 
 	orderID := fmt.Sprintf("%v", order["id"])
 	status := normalizeStatus(fmt.Sprintf("%v", order["status"]))
+
+	eventKey := fmt.Sprintf("order_%s_%s", orderID, status)
+
+	if isDuplicateEvent(eventKey) {
+		logger.Printf(
+			"INFO | woocommerce | duplicate event skipped | order_id=%s | status=%s",
+			orderID,
+			status,
+		)
+		return
+	}
 
 	logger.Printf(
 		"INFO | woocommerce payload received | order_id=%s | status=%s",
@@ -737,7 +785,7 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	storeJSON("woocommerce", orderID, order)
+	storeJSON(woocommerceDir, orderID, order)
 	w.Write([]byte(`{"status":"ok"}`))
 }
 
@@ -768,7 +816,7 @@ func main() {
 	// Ensure persistent directories exist BEFORE handling
 	// any traffic. If this fails, the app must not start.
 	// =========================================================
-	if err := os.MkdirAll(dataDir, 0755); err != nil {
+	if err := os.MkdirAll(storageDir, 0755); err != nil {
 		logger.Fatalf("fatal: failed to create data directory: %v", err)
 	}
 
