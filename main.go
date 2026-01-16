@@ -337,7 +337,7 @@ func truncate(s string, max int) string {
 // ------------------------------------------------------------
 //
 
-// GoKwik ABC handler (strict customer extraction)
+// GoKwik ABC handler (strict customer extraction + is_abandoned guard)
 func abcHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Always respond OK to avoid GoKwik retries
@@ -394,6 +394,15 @@ func abcHandler(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		// ---- is_abandoned flag ----
+		isAbandoned, _ := cart["is_abandoned"].(bool)
+
+		logger.Printf(
+			"DEBUG | abc | cart flags | cart_id=%v is_abandoned=%v",
+			cart["cart_id"],
+			isAbandoned,
+		)
+
 		// ---- strict customer extraction ----
 		customerRaw, ok := cart["customer"]
 		if !ok {
@@ -434,7 +443,7 @@ func abcHandler(w http.ResponseWriter, r *http.Request) {
 			cart["cart_id"],
 		)
 
-		// ---- mautic payload ----
+		// ---- mautic payload (always sent) ----
 		mauticPayload := map[string]any{
 			"email":                    email,
 			"firstname":                firstName,
@@ -485,27 +494,42 @@ func abcHandler(w http.ResponseWriter, r *http.Request) {
 			itemsText = "- (items unavailable)\n"
 		}
 
-		// ---- Telegram detailed message (Markdown) ----
-		telegramMessage := fmt.Sprintf(
-			"🛒 *Abandoned Cart*\n\n"+
-				"*Name:* %s %s\n"+
-				"*Email:* %s\n"+
-				"*Phone:* %s\n"+
-				"*Cart Value:* ₹%v\n"+
-				"*Stage:* %s\n\n"+
-				"*Items:*\n%s\n"+
-				"%s",
-			firstName,
-			lastName,
-			email,
-			phone,
-			cartValue,
-			dropStage,
-			itemsText,
-			cartURL,
-		)
+		// ---- Telegram message (send ONLY if abandoned) ----
+		if isAbandoned {
 
-		sendTelegram(telegramMessage)
+			telegramMessage := fmt.Sprintf(
+				"🛒 *Abandoned Cart*\n\n"+
+					"*Name:* %s %s\n"+
+					"*Email:* %s\n"+
+					"*Phone:* %s\n"+
+					"*Cart Value:* ₹%v\n"+
+					"*Stage:* %s\n\n"+
+					"*Items:*\n%s\n"+
+					"%s",
+				firstName,
+				lastName,
+				email,
+				phone,
+				cartValue,
+				dropStage,
+				itemsText,
+				cartURL,
+			)
+
+			logger.Printf(
+				"INFO | abc | sending telegram | email=%s | cart_id=%v",
+				email,
+				cart["cart_id"],
+			)
+
+			sendTelegram(telegramMessage)
+
+		} else {
+			logger.Printf(
+				"INFO | abc | cart not abandoned | telegram skipped | cart_id=%v",
+				cart["cart_id"],
+			)
+		}
 
 		// ---- persist raw cart ----
 		if err := storeJSON(
@@ -521,7 +545,6 @@ func abcHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 }
-
 
 // Website order data handler
 func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
@@ -669,13 +692,6 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 		strings.ToUpper(order["payment_method_title"].(string)),
 		itemsText,
 	)
-
-	logger.Printf(
-	"INFO | abc | sending telegram | email=%s | cart_id=%v",
-	email,
-	cart["cart_id"],
-	)
-	
 	sendTelegram(telegramMessage)
 
 	// Send WhatsApp
