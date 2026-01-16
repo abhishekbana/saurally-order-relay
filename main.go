@@ -244,7 +244,7 @@ func sendWhatsApp(orderID, phone, templateID, variables, state string) error {
 		return errors.New(string(b))
 	}
 
-	storeJSON(whatsappDir, orderID+"_"+state, string(b))
+	storeJSON("whatsapp", orderID+"_"+state, string(b))
 	return nil
 }
 
@@ -573,7 +573,7 @@ func abcHandler(w http.ResponseWriter, r *http.Request) {
 
 		// ---- persist raw cart ----
 		if err := storeJSON(
-			gokwikDir,
+			"gokwik",
 			fmt.Sprintf("%s_%s", email, time.Now().Format("150405")),
 			cart,
 		); err != nil {
@@ -785,7 +785,7 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	storeJSON(woocommerceDir, orderID, order)
+	storeJSON("woocommerce", orderID, order)
 	w.Write([]byte(`{"status":"ok"}`))
 }
 
