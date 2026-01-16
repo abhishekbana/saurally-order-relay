@@ -669,6 +669,13 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 		strings.ToUpper(order["payment_method_title"].(string)),
 		itemsText,
 	)
+
+	logger.Printf(
+	"INFO | abc | sending telegram | email=%s | cart_id=%v",
+	email,
+	cart["cart_id"],
+	)
+	
 	sendTelegram(telegramMessage)
 
 	// Send WhatsApp
