@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -17,7 +18,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-	"bytes"
 )
 
 //
@@ -118,17 +118,6 @@ func storeJSON(prefix, name string, data any) error {
 
 	return os.WriteFile(file, b, 0644)
 }
-
-// func storeJSON(folder, name string, payload any) {
-// 	fileLock.Lock()
-// 	defer fileLock.Unlock()
-
-// 	dir := filepath.Join(dataDir, folder)
-// 	_ = os.MkdirAll(dir, 0755)
-
-// 	b, _ := json.MarshalIndent(payload, "", "  ")
-// 	_ = os.WriteFile(filepath.Join(dir, name+".json"), b, 0644)
-// }
 
 //
 // ------------------------------------------------------------
@@ -273,9 +262,9 @@ func sendTelegram(message string) {
 	)
 
 	payload := map[string]string{
-		"chat_id":    chatID,
-		"text":       message,
-		"parse_mode": "HTML",
+		"chat_id":                  chatID,
+		"text":                     message,
+		"parse_mode":               "HTML",
 		"disable_web_page_preview": "true",
 	}
 
@@ -303,47 +292,6 @@ func sendTelegram(message string) {
 		}
 	}()
 }
-
-// func sendTelegramPlain(message string) {
-// 	if os.Getenv("TELEGRAM_ENABLED") != "true" {
-// 		return
-// 	}
-
-// 	token := os.Getenv("TELEGRAM_BOT_TOKEN")
-// 	chatID := os.Getenv("TELEGRAM_CHAT_ID")
-
-// 	if token == "" || chatID == "" {
-// 		logger.Println("WARN | telegram | missing config")
-// 		return
-// 	}
-
-// 	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token)
-
-// 	payload := map[string]string{
-// 		"chat_id": chatID,
-// 		"text":    message,
-// 	}
-
-// 	body, _ := json.Marshal(payload)
-
-// 	go func() {
-// 		resp, err := http.Post(url, "application/json", bytes.NewBuffer(body))
-// 		if err != nil {
-// 			logger.Printf("ERROR | telegram | send failed | err=%v", err)
-// 			return
-// 		}
-// 		defer resp.Body.Close()
-
-// 		if resp.StatusCode >= 300 {
-// 			respBody, _ := io.ReadAll(resp.Body)
-// 			logger.Printf(
-// 				"ERROR | telegram | api error | status=%d | body=%s",
-// 				resp.StatusCode,
-// 				string(respBody),
-// 			)
-// 		}
-// 	}()
-// }
 
 //
 // ------------------------------------------------------------
@@ -519,12 +467,12 @@ func abcHandler(w http.ResponseWriter, r *http.Request) {
 
 		if err := mauticUpsert(mauticPayload); err != nil {
 			logger.Printf(
-				"ERROR | abc | mautic upsert failed | email=%s | err=%v",
+				"ERROR | abc | mautic upsert failed for ABC | email=%s | err=%v",
 				email,
 				err,
 			)
 		} else {
-			logger.Printf("INFO | abc | mautic upsert success | email=%s", email)
+			logger.Printf("INFO | abc | mautic upsert success for ABC | email=%s", email)
 		}
 
 		// ---- extract cart items for Telegram ----
@@ -554,13 +502,13 @@ func abcHandler(w http.ResponseWriter, r *http.Request) {
 
 			telegramMessage := fmt.Sprintf(
 				"🛒 <b>Abandoned Cart</b>\n\n"+
-				"<b>Name:</b> %s %s\n"+
-				"<b>Email:</b> %s\n"+
-				"<b>Phone:</b> %s\n"+
-				"<b>Cart Value:</b> ₹%v\n"+
-				"<b>Stage:</b> %s\n\n"+
-				"<b>Items:</b>\n%s\n"+
-				"<a href=\"%s\">View Cart</a>",
+					"<b>Name:</b> %s %s\n"+
+					"<b>Email:</b> %s\n"+
+					"<b>Phone:</b> %s\n"+
+					"<b>Cart Value:</b> ₹%v\n"+
+					"<b>Stage:</b> %s\n\n"+
+					"<b>Items:</b>\n%s\n"+
+					"<a href=\"%s\">View Cart</a>",
 				firstName,
 				lastName,
 				email,
@@ -603,42 +551,37 @@ func abcHandler(w http.ResponseWriter, r *http.Request) {
 
 // Website order data handler
 func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
-	// var order map[string]any
-	// _ = json.NewDecoder(r.Body).Decode(&order)
-
-	// logger.Printf("DEBUG | Order Received - Raw Data - %s", order)
-
 	ct := r.Header.Get("Content-Type")
-    if !strings.Contains(ct, "application/json") {
-        logger.Printf(
-            "INFO | woocommerce non-json webhook ignored | content-type=%s",
-            ct,
-        )
-        w.WriteHeader(http.StatusOK)
-        w.Write([]byte(`{"status":"ignored"}`))
-        return
-    }
+	if !strings.Contains(ct, "application/json") {
+		logger.Printf(
+			"INFO | woocommerce non-json webhook ignored | content-type=%s",
+			ct,
+		)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ignored"}`))
+		return
+	}
 
-    // Read raw body
-    rawBody, err := io.ReadAll(r.Body)
-    if err != nil {
-        logger.Printf("ERROR | woocommerce | failed to read body | err=%v", err)
-        http.Error(w, "invalid body", http.StatusBadRequest)
-        return
-    }
+	// Read raw body
+	rawBody, err := io.ReadAll(r.Body)
+	if err != nil {
+		logger.Printf("ERROR | woocommerce | failed to read body | err=%v", err)
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
 
-    // Log raw JSON exactly as received
-    logger.Printf("DEBUG | woocommerce raw payload | %s", string(rawBody))
+	// Log raw JSON exactly as received
+	logger.Printf("DEBUG | woocommerce raw payload | %s", string(rawBody))
 
-    // Restore body for JSON decoding
-    r.Body = io.NopCloser(bytes.NewBuffer(rawBody))
+	// Restore body for JSON decoding
+	r.Body = io.NopCloser(bytes.NewBuffer(rawBody))
 
-    var order map[string]any
-    if err := json.NewDecoder(r.Body).Decode(&order); err != nil {
-        logger.Printf("ERROR | woocommerce | json decode failed | err=%v", err)
-        http.Error(w, "invalid json", http.StatusBadRequest)
-        return
-    }
+	var order map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&order); err != nil {
+		logger.Printf("ERROR | woocommerce | json decode failed | err=%v", err)
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
 
 	billing, ok := getMap(order, "billing")
 	if !ok {
@@ -657,7 +600,6 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 	addressLine1, _ := billing["address_1"].(string)
 	addressLine2, _ := billing["address_2"].(string)
 
-
 	orderID := fmt.Sprintf("%v", order["id"])
 	status := normalizeStatus(fmt.Sprintf("%v", order["status"]))
 
@@ -668,105 +610,87 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 	)
 
 	mauticPayload := map[string]any{
-		"firstname": firstName,
-		"lastname": lastName,
-		"email": email,
-		"mobile": phone,
-		"phone": phone,
-		"address1": truncate(addressLine1, 64),
-		"address2": truncate(addressLine2, 64),
-		"city": billing["city"],
-		"zipcode": billing["postcode"],
-		"last_order_id": orderID,
+		"firstname":       firstName,
+		"lastname":        lastName,
+		"email":           email,
+		"mobile":          phone,
+		"phone":           phone,
+		"address1":        truncate(addressLine1, 64),
+		"address2":        truncate(addressLine2, 64),
+		"city":            billing["city"],
+		"zipcode":         billing["postcode"],
+		"last_order_id":   orderID,
 		"last_order_date": todayDDMMYYYY(),
 		// "first_order_date": todayDDMMYYYY(),
-		"last_order_value": order["total"],
-		"has_purchased": true,
+		"last_order_value":   order["total"],
+		"has_purchased":      true,
 		"last_product_names": strings.Join(extractProducts(order), ", "),
-		"lead_source": "woocommerce",
-		"tags": []string{"source:website", "type:website-customer"},
-		"abc_cupon5_sent": true,
-		"abc1": true,
-		"abc2": true,
-		"abc3": true,
+		"lead_source":        "woocommerce",
+		"tags":               []string{"source:website", "type:website-customer"},
+		"abc_cupon5_sent":    true,
+		"abc1":               true,
+		"abc2":               true,
+		"abc3":               true,
 	}
 
 	if err := mauticUpsert(mauticPayload); err != nil {
-		logger.Printf("ERROR | mautic upsert failed | order_id=%s | err=%v", orderID, err)
+		logger.Printf("ERROR | mautic upsert failed for order | order_id=%s | err=%v", orderID, err)
 	} else {
-		logger.Printf("INFO | mautic upsert success | order_id=%s", orderID)
+		logger.Printf("INFO | mautic upsert success for order | order_id=%s", orderID)
 	}
 
-	// construct telegram messgage and Send
-	// ---- extract billing details ----
-	billing, _ = order["billing"].(map[string]any)
+	// construct telegram messgage and Send only if status is processing
+	if status == "processing" {
+		// ---- extract billing details ----
+		billing, _ = order["billing"].(map[string]any)
+		email, _ = billing["email"].(string)
+		phone, _ = billing["phone"].(string)
+		firstName, _ = billing["first_name"].(string)
+		lastName, _ = billing["last_name"].(string)
 
-	email, _ = billing["email"].(string)
-	phone, _ = billing["phone"].(string)
-	firstName, _ = billing["first_name"].(string)
-	lastName, _ = billing["last_name"].(string)
+		// ---- extract items ----
+		itemsText := ""
+		if itemsRaw, ok := order["line_items"].([]any); ok && len(itemsRaw) > 0 {
+			for _, it := range itemsRaw {
+				item, ok := it.(map[string]any)
+				if !ok {
+					continue
+				}
 
-	// ---- extract items ----
-	itemsText := ""
-	if itemsRaw, ok := order["line_items"].([]any); ok && len(itemsRaw) > 0 {
-		for _, it := range itemsRaw {
-			item, ok := it.(map[string]any)
-			if !ok {
-				continue
-			}
+				name, _ := item["name"].(string)
+				qtyFloat, _ := item["quantity"].(float64)
 
-			name, _ := item["name"].(string)
-			qtyFloat, _ := item["quantity"].(float64)
-
-			if name != "" {
-				itemsText += fmt.Sprintf("- %s × %d\n", name, int(qtyFloat))
+				if name != "" {
+					itemsText += fmt.Sprintf("- %s × %d\n", name, int(qtyFloat))
+				}
 			}
 		}
+
+		if itemsText == "" {
+			itemsText = "- (items unavailable)\n"
+		}
+
+		// HTML formatting of telegram message
+		telegramMessage := fmt.Sprintf(
+			"📦 <b>New Order</b>\n\n"+
+				"<b>Order ID:</b> %s\n"+
+				"<b>Name:</b> %s %s\n"+
+				"<b>Email:</b> %s\n"+
+				"<b>Phone:</b> %s\n"+
+				"<b>Amount:</b> ₹%s\n"+
+				"<b>Payment:</b> %s\n\n"+
+				"<b>Items:</b>\n%s",
+			orderID,
+			firstName,
+			lastName,
+			email,
+			phone,
+			order["total"],
+			strings.ToUpper(order["payment_method_title"].(string)),
+			itemsText,
+		)
+		sendTelegram(telegramMessage)
 	}
-
-	if itemsText == "" {
-		itemsText = "- (items unavailable)\n"
-	}
-
-	// ---- build Telegram message (Markdown) ----
-	// telegramMessage := fmt.Sprintf(
-	// 	"📦 *New Order Received*\n\n"+
-	// 		"*Order ID:* %s\n"+
-	// 		"*Name:* %s %s\n"+
-	// 		"*Email:* %s\n"+
-	// 		"*Phone:* %s\n"+
-	// 		"*Amount:* ₹%v\n"+
-	// 		"*Payment:* %s\n\n"+
-	// 		"*Items:*\n%s",
-	// 	orderID,
-	// 	firstName,
-	// 	lastName,
-	// 	email,
-	// 	phone,
-	// 	order["total"],
-	// 	strings.ToUpper(order["payment_method_title"].(string)),
-	// 	itemsText,
-	// )
-
-	telegramMessage := fmt.Sprintf(
-		"📦 <b>New Order</b>\n\n"+
-		"<b>Order ID:</b> %s\n"+
-		"<b>Name:</b> %s %s\n"+
-		"<b>Email:</b> %s\n"+
-		"<b>Phone:</b> %s\n"+
-		"<b>Amount:</b> ₹%s\n"+
-		"<b>Payment:</b> %s\n\n"+
-		"<b>Items:</b>\n%s",
-		orderID,
-		firstName,
-		lastName,
-		email,
-		phone,
-		order["total"],
-		strings.ToUpper(order["payment_method_title"].(string)),
-		itemsText,
-	)
-	sendTelegram(telegramMessage)
 
 	// Send WhatsApp
 	switch status {
@@ -881,20 +805,20 @@ func main() {
 	// - resource exhaustion
 	// =========================================================
 	server := &http.Server{
-		Addr:              ":8080",
-		Handler:           mux,
+		Addr:    ":8080",
+		Handler: mux,
 
 		// Max time allowed to read request headers/body
-		ReadTimeout:       10 * time.Second,
+		ReadTimeout: 10 * time.Second,
 
 		// Max time allowed to read headers only
 		ReadHeaderTimeout: 5 * time.Second,
 
 		// Max time allowed to write response
-		WriteTimeout:      15 * time.Second,
+		WriteTimeout: 15 * time.Second,
 
 		// Max time to keep idle connections open
-		IdleTimeout:       60 * time.Second,
+		IdleTimeout: 60 * time.Second,
 	}
 
 	// Channel used to capture fatal server startup/runtime errors
