@@ -273,8 +273,9 @@ func sendTelegram(message string) {
 	)
 
 	payload := map[string]string{
-		"chat_id": chatID,
-		"text":    message,
+		"chat_id":    chatID,
+		"text":       message,
+		"parse_mode": "Markdown",
 	}
 
 	body, _ := json.Marshal(payload)
@@ -292,6 +293,7 @@ func sendTelegram(message string) {
 		resp.Body.Close()
 	}()
 }
+
 
 
 //
@@ -410,7 +412,6 @@ func abcHandler(w http.ResponseWriter, r *http.Request) {
 		firstName, _ := customer["firstname"].(string)
 		lastName, _ := customer["lastname"].(string)
 
-		// ---- validate critical fields (log only) ----
 		if email == "" || phone == "" || firstName == "" {
 			logger.Printf(
 				"ERROR | abc | missing critical customer fields | email=%q phone=%q firstname=%q cart_id=%v",
@@ -433,7 +434,7 @@ func abcHandler(w http.ResponseWriter, r *http.Request) {
 			cart["cart_id"],
 		)
 
-		// ---- mautic payload (always sent) ----
+		// ---- mautic payload ----
 		mauticPayload := map[string]any{
 			"email":                    email,
 			"firstname":                firstName,
@@ -462,15 +463,49 @@ func abcHandler(w http.ResponseWriter, r *http.Request) {
 			logger.Printf("INFO | abc | mautic upsert success | email=%s", email)
 		}
 
-		// Send Telegram
-		sendTelegram(
-			fmt.Sprintf(
-				"🛒 Abandoned Cart\nEmail: %s\nAmount: %v\nStage: %s",
-				email,
-				cartValue,
-				dropStage,
-			),
+		// ---- extract cart items for Telegram ----
+		itemsText := ""
+		if itemsRaw, ok := cart["items"].([]any); ok && len(itemsRaw) > 0 {
+			for _, it := range itemsRaw {
+				item, ok := it.(map[string]any)
+				if !ok {
+					continue
+				}
+
+				title, _ := item["title"].(string)
+				qtyFloat, _ := item["quantity"].(float64)
+
+				if title != "" {
+					itemsText += fmt.Sprintf("- %s × %d\n", title, int(qtyFloat))
+				}
+			}
+		}
+
+		if itemsText == "" {
+			itemsText = "- (items unavailable)\n"
+		}
+
+		// ---- Telegram detailed message (Markdown) ----
+		telegramMessage := fmt.Sprintf(
+			"🛒 *Abandoned Cart*\n\n"+
+				"*Name:* %s %s\n"+
+				"*Email:* %s\n"+
+				"*Phone:* %s\n"+
+				"*Cart Value:* ₹%v\n"+
+				"*Stage:* %s\n\n"+
+				"*Items:*\n%s\n"+
+				"%s",
+			firstName,
+			lastName,
+			email,
+			phone,
+			cartValue,
+			dropStage,
+			itemsText,
+			cartURL,
 		)
+
+		sendTelegram(telegramMessage)
 
 		// ---- persist raw cart ----
 		if err := storeJSON(
@@ -486,6 +521,7 @@ func abcHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 }
+
 
 // Website order data handler
 func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
@@ -583,15 +619,57 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 		logger.Printf("INFO | mautic upsert success | order_id=%s", orderID)
 	}
 
-	// Send Telegram
-	sendTelegram(
-		fmt.Sprintf(
-			"📦 New Order\nOrder ID: %s\nAmount: %s\nPayment: %s",
-			orderID,
-			order["total"],
-			strings.ToUpper(order["payment_method_title"].(string)),
-		),
+	// construct telegram messgage and Send
+	// ---- extract billing details ----
+	billing, _ = order["billing"].(map[string]any)
+
+	email, _ = billing["email"].(string)
+	phone, _ = billing["phone"].(string)
+	firstName, _ = billing["first_name"].(string)
+	lastName, _ = billing["last_name"].(string)
+
+	// ---- extract items ----
+	itemsText := ""
+	if itemsRaw, ok := order["line_items"].([]any); ok && len(itemsRaw) > 0 {
+		for _, it := range itemsRaw {
+			item, ok := it.(map[string]any)
+			if !ok {
+				continue
+			}
+
+			name, _ := item["name"].(string)
+			qtyFloat, _ := item["quantity"].(float64)
+
+			if name != "" {
+				itemsText += fmt.Sprintf("- %s × %d\n", name, int(qtyFloat))
+			}
+		}
+	}
+
+	if itemsText == "" {
+		itemsText = "- (items unavailable)\n"
+	}
+
+	// ---- build Telegram message (Markdown) ----
+	telegramMessage := fmt.Sprintf(
+		"📦 *New Order Received*\n\n"+
+			"*Order ID:* %s\n"+
+			"*Name:* %s %s\n"+
+			"*Email:* %s\n"+
+			"*Phone:* %s\n"+
+			"*Amount:* ₹%v\n"+
+			"*Payment:* %s\n\n"+
+			"*Items:*\n%s",
+		orderID,
+		firstName,
+		lastName,
+		email,
+		phone,
+		order["total"],
+		strings.ToUpper(order["payment_method_title"].(string)),
+		itemsText,
 	)
+	sendTelegram(telegramMessage)
 
 	// Send WhatsApp
 	switch status {
