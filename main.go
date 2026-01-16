@@ -250,6 +250,52 @@ func sendWhatsApp(orderID, phone, templateID, variables, state string) error {
 
 //
 // ------------------------------------------------------------
+// TELEGRAM
+// ------------------------------------------------------------
+//
+
+func sendTelegram(message string) {
+	if os.Getenv("TELEGRAM_ENABLED") != "true" {
+		return
+	}
+
+	token := os.Getenv("TELEGRAM_BOT_TOKEN")
+	chatID := os.Getenv("TELEGRAM_CHAT_ID")
+
+	if token == "" || chatID == "" {
+		logger.Println("WARN | telegram | missing config")
+		return
+	}
+
+	url := fmt.Sprintf(
+		"https://api.telegram.org/bot%s/sendMessage",
+		token,
+	)
+
+	payload := map[string]string{
+		"chat_id": chatID,
+		"text":    message,
+	}
+
+	body, _ := json.Marshal(payload)
+
+	go func() { // async, never block handler
+		resp, err := http.Post(
+			url,
+			"application/json",
+			bytes.NewBuffer(body),
+		)
+		if err != nil {
+			logger.Printf("ERROR | telegram | send failed | err=%v", err)
+			return
+		}
+		resp.Body.Close()
+	}()
+}
+
+
+//
+// ------------------------------------------------------------
 // HELPERS
 // ------------------------------------------------------------
 //
@@ -416,6 +462,16 @@ func abcHandler(w http.ResponseWriter, r *http.Request) {
 			logger.Printf("INFO | abc | mautic upsert success | email=%s", email)
 		}
 
+		// Send Telegram
+		sendTelegram(
+			fmt.Sprintf(
+				"🛒 Abandoned Cart\nEmail: %s\nAmount: %v\nStage: %s",
+				email,
+				cartValue,
+				dropStage,
+			),
+		)
+
 		// ---- persist raw cart ----
 		if err := storeJSON(
 			"gokwik",
@@ -527,8 +583,18 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 		logger.Printf("INFO | mautic upsert success | order_id=%s", orderID)
 	}
 
-	switch status {
+	// Send Telegram
+	sendTelegram(
+		fmt.Sprintf(
+			"📦 New Order\nOrder ID: %s\nAmount: %s\nPayment: %s",
+			orderID,
+			total,
+			paymentMethod,
+		),
+	)
 
+	// Send WhatsApp
+	switch status {
 	case "processing":
 		flag := flagPath(orderID, "processing")
 		if flagExists(flag) {
