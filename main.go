@@ -589,7 +589,7 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 			"📦 New Order\nOrder ID: %s\nAmount: %s\nPayment: %s",
 			orderID,
 			order["total"],
-			paymentMethod,
+			strings.ToUpper(order["payment_method_title"].(string)),
 		),
 	)
 
