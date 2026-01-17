@@ -81,10 +81,6 @@ func nowISO() string {
 	return time.Now().UTC().Format(time.RFC3339)
 }
 
-func todayDDMMYYYY() string {
-	return time.Now().Format("02/01/2006")
-}
-
 //
 // ------------------------------------------------------------
 // LOGGER
@@ -668,7 +664,7 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 		"city":            billing["city"],
 		"zipcode":         billing["postcode"],
 		"last_order_id":   orderID,
-		"last_order_date": todayDDMMYYYY(),
+		"last_order_date": nowISO(),
 		// "first_order_date": todayDDMMYYYY(),
 		"last_order_value":   order["total"],
 		"has_purchased":      true,
