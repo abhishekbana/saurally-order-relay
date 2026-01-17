@@ -81,6 +81,10 @@ func nowISO() string {
 	return time.Now().UTC().Format(time.RFC3339)
 }
 
+func todayDDMMYYYY() string {
+	return time.Now().Format("02/01/2006")
+}
+
 //
 // ------------------------------------------------------------
 // LOGGER
