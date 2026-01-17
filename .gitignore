@@ -54,6 +54,7 @@ Thumbs.db
 *.swo
 *~
 rough.txt
+docker-compose-old.yml
 
 # ----------------------------------------------------
 # Test & coverage
