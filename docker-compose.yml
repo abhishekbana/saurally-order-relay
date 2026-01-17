@@ -1,0 +1,41 @@
+services:
+  saurally-order-relay:
+    image: golang:1.22-alpine
+    container_name: saurally-order-relay
+
+    restart: unless-stopped
+
+    working_dir: /app
+
+    environment:
+      TZ: Asia/Kolkata
+
+    env_file:
+      - .env
+
+    ports:
+      - "5555:8080"
+
+    volumes:
+      # Source code + go.mod + main.go
+      - /mnt/SSD256/configs/saurally-order-relay:/app
+
+      # Persistent application storage (events, flags, errors, etc.)
+      - /mnt/SSD256/configs/saurally-order-relay/storage:/app/storage
+
+    command: >
+      sh -c "
+      echo '▶ building saurally-order-relay' &&
+      mkdir -p /app/bin &&
+      go mod init saurally-order-relay 2>/dev/null || true &&
+      go mod tidy &&
+      go build -trimpath -ldflags='-s -w' -o /app/bin/saurally-order-relay . &&
+      echo '▶ build complete, starting binary' &&
+      exec /app/bin/saurally-order-relay
+      "
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
