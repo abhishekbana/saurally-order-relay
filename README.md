@@ -1,94 +1,313 @@
-# saurally-order-relay
+# Saurally Order Relay
+saurally-order-relay is a production-grade webhook relay service written in Go. It receives commerce events from WooCommerce and GoKwik and reliably forwards them to Mautic CRM, WhatsApp, and Telegram, while preventing duplicate processing.
 
-A production-grade webhook relay service for processing commerce events and dispatching downstream actions such as:
-- CRM synchronization (Mautic)
-- WhatsApp notifications (Fast2SMS)
-- Persistent audit logging
-- Idempotent message delivery
-
-This service is designed to be **stateless at runtime** and **stateful via filesystem persistence**, making it reliable across restarts and crashes.
+The service is designed to be restart-safe, idempotent, and suitable for long-running production use on TrueNAS / Docker.
 
 ---
 
-## Key Features
+## What this service does
 
-- Receives WooCommerce and GoKwik webhooks
-- Normalizes order lifecycle states
-- Guarantees **exactly-once WhatsApp delivery**
-- Prevents duplicate notifications
-- Persists all payloads for audit/debugging
-- Graceful shutdown (Docker-safe)
-- Minimal dependencies (Go stdlib)
+This service listens to webhooks and performs the following actions:
 
----
-
-## Order Status Logic
-
-| WooCommerce Status | Internal State | WhatsApp Sent |
-|------------------|---------------|---------------|
-| processing       | processing    | Yes (once)   |
-| completed        | fulfilled     | Yes (once)   |
-| shipped          | fulfilled     | Yes (once)   |
-| duplicate events | —             | No           |
-
-`completed` and `shipped` are treated as the **same fulfillment state**.
+• Processes WooCommerce order lifecycle events  
+• Processes GoKwik Abandoned Cart (ABC) events  
+• Syncs customer and order/cart data to Mautic  
+• Sends WhatsApp notifications using templates  
+• Sends internal Telegram alerts  
+• Prevents duplicate notifications and CRM updates  
+• Stores raw payloads and event markers on disk  
 
 ---
 
-## Endpoints
+## Order State Logic (WooCommerce)
 
-| Endpoint        | Method | Purpose |
-|---------------|--------|--------|
-| `/`           | POST   | GoKwik webhook |
-| `/woocommerce`| POST   | WooCommerce webhook |
-| `/health`     | GET    | Health check (Docker / monitoring) |
+| Order Status / Condition | Mautic Upsert | WhatsApp Message | Telegram Alert | Duplicate Protection |
+|--------------------------|---------------|------------------|----------------|----------------------|
+| processing               | ✅ Yes        | ✅ Order Received | ✅ New Order   | Yes (event marker)   |
+| completed                | ✅ Yes        | ❌ No            | ❌ No          | Yes                  |
+| shipped (tracking found) | ❌ No         | ✅ Order Shipped + Tracking ID | ❌ No | Yes |
+| shipped (no tracking)    | ❌ No         | ✅ Order Shipped | ❌ No          | Yes                  |
+| duplicate webhook        | ❌ Skipped    | ❌ Skipped       | ❌ Skipped     | Yes                  |
+
+Notes:  
+• Tracking ID is extracted from `meta_data → _wc_shipment_tracking_items → tracking_number`  
+• WhatsApp is sent only once per order state  
+• Mautic dates are always sent in ISO 8601 format  
 
 ---
 
-## Directory Layout
+## Endpoint Summary
 
-```text
-saurally-order-relay/
-├── main.go
-├── Dockerfile
-├── docker-compose.yml
-├── Makefile
-├── .env.example
-└── data/
-    ├── logs/
-    └── storage/
-        ├── gokwik/
-        ├── woocommerce/
-        ├── errors/
-        └── flags/
+| Endpoint       | Method | Source System | Purpose |
+|---------------|--------|---------------|---------|
+| /abc          | POST   | GoKwik        | Abandoned cart ingestion |
+| /woocommerce  | POST   | WooCommerce   | Order lifecycle processing |
+| /health       | GET    | Internal      | Health check |
+| /(root)       | ANY    | External bots | Blocked and logged |
+
+---
+
+## GoKwik Abandoned Cart Logic (/abc)
+
+| Condition              | Action |
+|------------------------|--------|
+| is_abandoned = true    | Process cart |
+| is_abandoned = false   | Ignore |
+| Missing email / phone / firstname | Logged (still processed) |
+| Multiple carts in payload | Each cart processed independently |
+
+For each abandoned cart:
+
+• Customer details are extracted strictly from `cart.customer`
+• Email, phone, and firstname are mandatory
+• Cart value, drop stage, and cart URL are captured
+• Items (title + quantity) are extracted
+• Data is upserted into Mautic
+• A Telegram alert is sent with cart details
+• Raw cart payload is stored on disk
+
+Telegram alerts include:
+
+• Customer name  
+• Email  
+• Phone  
+• Cart value  
+• Drop stage  
+• Items with quantity  
+• Cart URL  
+
+All Telegram messages use Markdown/HTML formatting and are non-blocking.
+
+---
+
+## Idempotency Event Keys
+
+| Event Type | Marker File Pattern |
+|------------|---------------------|
+| Order received | storage/events/order_<ORDER_ID>_processing |
+| Order shipped  | storage/events/order_<ORDER_ID>_shipped |
+| Abandoned cart | storage/events/abc_<CART_ID> |
+
+If a marker exists, the event is skipped entirely.
+
+---
+
+## WooCommerce Order Handling (/woocommerce)
+
+WooCommerce order webhooks are processed based on order status.
+
+Supported statuses:
+
+**processing  
+completed  
+shipped (via metadata)**
+
+For each order event:
+
+• Order ID, customer, billing, and items are extracted
+• Duplicate events are detected and skipped
+• Order data is upserted into Mautic
+• WhatsApp notification is sent exactly once per state
+• Telegram alert is sent for new orders
+• Shipment tracking ID is extracted if present
+
+Shipment tracking is extracted from:
+
+```python
+meta_data → _wc_shipment_tracking_items → tracking_number
+```
+When available, the tracking number is appended to the WhatsApp message.
+
+---
+
+<!-- ## Idempotency and Duplicate Protection
+
+Duplicate processing is prevented using filesystem-based event markers.
+
+For each order state, a marker file is created:
+
+storage/events/order_<ORDER_ID>_<STATE>
+
+If the marker exists:
+
+• Mautic upsert is skipped  
+• WhatsApp message is not sent again  
+• Telegram message is not sent again  
+
+This guarantees exactly-once side effects even if WooCommerce retries webhooks.
+
+--- -->
+
+## Mautic Integration
+
+Mautic is updated via REST API upserts.
+
+### Abandoned Cart Fields
+
+• email  
+• firstname  
+• lastname  
+• phone / mobile  
+• cart_url  
+• cart_value  
+• drop_stage  
+• last_abandoned_cart_date (ISO 8601)  
+• tags  
+
+### Order Fields
+
+• email  
+• firstname  
+• lastname  
+• phone  
+• address (safely truncated)  
+• last_order_id  
+• last_order_value  
+• last_order_date (ISO 8601)  
+• product names  
+
+IMPORTANT  
+All datetime fields sent to Mautic MUST be ISO 8601.
+
+The service uses:
+
+```python
+time.Now().UTC().Format(time.RFC3339)
 ```
 
-## Environment Variables
+Any non-ISO date (for example DD/MM/YYYY) will cause Mautic 500 errors.
 
-See .env.example
+---
 
-Required:
- - MAUTIC_URL
- - MAUTIC_USER
- - MAUTIC_PASS
- - FAST2SMS_API_KEY
+## Telegram Notifications
 
+Telegram is used for internal operational alerts.
 
-## Build & Run (Local)
+Events that trigger Telegram messages:
+
+• Abandoned carts (GoKwik)  
+• New orders (WooCommerce processing state)  
+
+Telegram configuration is controlled by environment variables:
+
+```json
+TELEGRAM_ENABLED=true  
+TELEGRAM_BOT_TOKEN=xxxxxxxx  
+TELEGRAM_CHAT_ID=-123456789  
 ```
-make build
-make run
+
+Messages are sent asynchronously and never block webhook handling.
+
+---
+
+## WhatsApp Messaging
+
+WhatsApp notifications are sent using predefined template IDs.
+
+Supported scenarios:
+
+• Order received  
+• Order shipped  
+• Order shipped with tracking ID  
+
+Tracking ID is included only when available.
+
+WhatsApp messages are protected by idempotency flags to avoid duplicates.
+
+---
+
+## Persistent Storage Layout
+
+All persistent data is stored under the mounted storage directory:
+
+```python
+storage/
+├── gokwik/        Raw GoKwik cart payloads  
+├── woocommerce/  Raw WooCommerce order payloads  
+├── whatsapp/     WhatsApp API responses  
+├── events/       Idempotency marker files  
+├── flags/        Internal flags  
+└── errors/       Reserved for failures  
 ```
 
-## Docker Production
+There is no in-memory state.  
+Restarting the container is always safe.
 
-```
-make docker-build
-make docker-up
-```
+---
+
+## Logging
+
+Logs are written to stdout and to file.
+
+Log file location:
+
+storage/logs/app.log
+
+Logs include:
+
+• Raw payloads  
+• Processing decisions  
+• Duplicate skips  
+• External API errors  
+• Telegram and WhatsApp send attempts  
+
+Timezone is controlled using:
+
+TZ=Asia/Kolkata
+
+---
+
+## Docker Runtime Model
+
+The service runs using the official Go image.
+
+Source code is mounted from the host.
+
+On every container start:
+
+• Latest main.go is compiled
+• The binary is executed
+• No Docker image rebuild is required
+
+Deployment workflow:
+
+git pull  
+docker compose restart  
+
+This guarantees the container always runs the latest code.
+
+---
 
 ## Health Check
 
+```python
+GET /health
 ```
-curl http://localhost:8080/health
-```
+
+Response:
+ok
+
+Used by Docker and reverse proxies.
+
+---
+
+## Security Hardening
+
+• Root path blocked
+• Unknown paths logged and rejected
+• JSON-only payload acceptance
+• Graceful shutdown on SIGTERM / SIGINT
+• HTTP timeouts configured
+
+---
+
+## Summary
+
+saurally-order-relay is a hardened webhook relay that:
+
+• Eliminates duplicate customer notifications  
+• Keeps Mautic CRM data consistent  
+• Provides real-time Telegram visibility  
+• Survives restarts and webhook retries safely  
+
+This README reflects the current live production behavior.
