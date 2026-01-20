@@ -49,8 +49,9 @@ var (
 	fast2SMSKey   = os.Getenv("FAST2SMS_API_KEY")
 	phoneNumberID = os.Getenv("PHONE_NUMBER_ID")
 
-	msgOrderReceived = os.Getenv("MESSAGE_ID_ORDER_RECEIVED")
-	msgOrderShipped  = os.Getenv("MESSAGE_ID_ORDER_SHIPPED")
+	msgOrderReceived            = os.Getenv("MESSAGE_ID_ORDER_RECEIVED")
+	msgOrderShipped             = os.Getenv("MESSAGE_ID_ORDER_SHIPPED")
+	msgOrderShippedWithTracking = os.Getenv("MESSAGE_ID_ORDER_SHIPPED_WITH_TRACKING")
 )
 
 //
@@ -337,6 +338,41 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max]
+}
+
+// Extraxt shipment tracking number from order meta_data
+func extractTrackingNumber(order map[string]any) string {
+	metaRaw, ok := order["meta_data"].([]any)
+	if !ok {
+		return ""
+	}
+
+	for _, m := range metaRaw {
+		meta, ok := m.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		key, _ := meta["key"].(string)
+		if key != "_wc_shipment_tracking_items" {
+			continue
+		}
+
+		items, ok := meta["value"].([]any)
+		if !ok || len(items) == 0 {
+			continue
+		}
+
+		item, ok := items[0].(map[string]any)
+		if !ok {
+			continue
+		}
+
+		tracking, _ := item["tracking_number"].(string)
+		return tracking
+	}
+
+	return ""
 }
 
 // isDuplicateEvent ensures each order+status is processed once
@@ -769,14 +805,29 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 		if flagExists(flag) {
 			logger.Printf("INFO | whatsapp skipped | order_id=%s | state=fulfilled | reason=duplicate", orderID)
 		} else {
-			vars := fmt.Sprintf(
-				"%s|%s|%s",
-				billing["first_name"],
-				orderID,
-				todayDDMMYYYY(),
-			)
-
-			if err := sendWhatsApp(orderID, billing["phone"].(string), msgOrderShipped, vars, "fulfilled"); err != nil {
+			var messageID, vars string
+			trackingNumber := extractTrackingNumber(order)
+			// Prepare variables based on presence of tracking number
+			// if tracking number is present, use template with tracking else template without tracking
+			if trackingNumber == "" {
+				vars = fmt.Sprintf(
+					"%s|%s|%s",
+					billing["first_name"],
+					orderID,
+					todayDDMMYYYY(),
+				)
+				messageID = msgOrderShipped
+			} else {
+				vars = fmt.Sprintf(
+					"%s|%s|%s|%s",
+					billing["first_name"],
+					orderID,
+					todayDDMMYYYY(),
+					trackingNumber,
+				)
+				messageID = msgOrderShippedWithTracking
+			}
+			if err := sendWhatsApp(orderID, billing["phone"].(string), messageID, vars, "fulfilled"); err != nil {
 				logger.Printf("ERROR | whatsapp failed | order_id=%s | state=fulfilled | err=%v", orderID, err)
 			} else {
 				createFlag(flag)
