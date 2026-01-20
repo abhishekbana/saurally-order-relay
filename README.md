@@ -1,4 +1,5 @@
 # Saurally Order Relay
+
 saurally-order-relay is a production-grade webhook relay service written in Go. It receives commerce events from WooCommerce and GoKwik and reliably forwards them to Mautic CRM, WhatsApp, and Telegram, while preventing duplicate processing.
 
 The service is designed to be restart-safe, idempotent, and suitable for long-running production use on TrueNAS / Docker.
@@ -9,13 +10,13 @@ The service is designed to be restart-safe, idempotent, and suitable for long-ru
 
 This service listens to webhooks and performs the following actions:
 
-• Processes WooCommerce order lifecycle events  
-• Processes GoKwik Abandoned Cart (ABC) events  
-• Syncs customer and order/cart data to Mautic  
-• Sends WhatsApp notifications using templates  
-• Sends internal Telegram alerts  
-• Prevents duplicate notifications and CRM updates  
-• Stores raw payloads and event markers on disk  
+- Processes WooCommerce order lifecycle events  
+- Processes GoKwik Abandoned Cart (ABC) events  
+- Syncs customer and order/cart data to Mautic  
+- Sends WhatsApp notifications using templates  
+- Sends internal Telegram alerts  
+- Prevents duplicate notifications and CRM updates  
+- Stores raw payloads and event markers on disk  
 
 ---
 
@@ -30,9 +31,9 @@ This service listens to webhooks and performs the following actions:
 | duplicate webhook        | ❌ Skipped    | ❌ Skipped       | ❌ Skipped     | Yes                  |
 
 Notes:  
-• Tracking ID is extracted from `meta_data → _wc_shipment_tracking_items → tracking_number`  
-• WhatsApp is sent only once per order state  
-• Mautic dates are always sent in ISO 8601 format  
+- Tracking ID is extracted from `meta_data → _wc_shipment_tracking_items → tracking_number`  
+- WhatsApp is sent only once per order state  
+- Mautic dates are always sent in ISO 8601 format  
 
 ---
 
@@ -58,23 +59,23 @@ Notes:
 
 For each abandoned cart:
 
-• Customer details are extracted strictly from `cart.customer`
-• Email, phone, and firstname are mandatory
-• Cart value, drop stage, and cart URL are captured
-• Items (title + quantity) are extracted
-• Data is upserted into Mautic
-• A Telegram alert is sent with cart details
-• Raw cart payload is stored on disk
+- Customer details are extracted strictly from `cart.customer`
+- Email, phone, and firstname are mandatory
+- Cart value, drop stage, and cart URL are captured
+- Items (title + quantity) are extracted
+- Data is upserted into Mautic
+- A Telegram alert is sent with cart details
+- Raw cart payload is stored on disk
 
 Telegram alerts include:
 
-• Customer name  
-• Email  
-• Phone  
-• Cart value  
-• Drop stage  
-• Items with quantity  
-• Cart URL  
+- Customer name  
+- Email  
+- Phone  
+- Cart value  
+- Drop stage  
+- Items with quantity  
+- Cart URL  
 
 All Telegram messages use Markdown/HTML formatting and are non-blocking.
 
@@ -100,12 +101,12 @@ Supported statuses: **processing, completed shipped (via metadata)**
 
 For each order event:
 
-• Order ID, customer, billing, and items are extracted
-• Duplicate events are detected and skipped
-• Order data is upserted into Mautic
-• WhatsApp notification is sent exactly once per state
-• Telegram alert is sent for new orders
-• Shipment tracking ID is extracted if present
+- Order ID, customer, billing, and items are extracted
+- Duplicate events are detected and skipped
+- Order data is upserted into Mautic
+- WhatsApp notification is sent exactly once per state
+- Telegram alert is sent for new orders
+- Shipment tracking ID is extracted if present
 
 Shipment tracking is extracted from:
 
@@ -122,27 +123,27 @@ Mautic is updated via REST API upserts.
 
 ### Abandoned Cart Fields
 
-• email  
-• firstname  
-• lastname  
-• phone / mobile  
-• cart_url  
-• cart_value  
-• drop_stage  
-• last_abandoned_cart_date (ISO 8601)  
-• tags  
+- email  
+- firstname  
+- lastname  
+- phone / mobile  
+- cart_url  
+- cart_value  
+- drop_stage  
+- last_abandoned_cart_date (ISO 8601)  
+- tags  
 
 ### Order Fields
 
-• email  
-• firstname  
-• lastname  
-• phone  
-• address (safely truncated)  
-• last_order_id  
-• last_order_value  
-• last_order_date (ISO 8601)  
-• product names  
+- email  
+- firstname  
+- lastname  
+- phone  
+- address (safely truncated)  
+- last_order_id  
+- last_order_value  
+- last_order_date (ISO 8601)  
+- product names  
 
 IMPORTANT  
 All datetime fields sent to Mautic MUST be ISO 8601.
@@ -163,8 +164,8 @@ Telegram is used for internal operational alerts.
 
 Events that trigger Telegram messages:
 
-• Abandoned carts (GoKwik)  
-• New orders (WooCommerce processing state)  
+- Abandoned carts (GoKwik)  
+- New orders (WooCommerce processing state)  
 
 Telegram configuration is controlled by environment variables:
 
@@ -184,9 +185,9 @@ WhatsApp notifications are sent using predefined template IDs.
 
 Supported scenarios:
 
-• Order received  
-• Order shipped  
-• Order shipped with tracking ID  
+- Order received  
+- Order shipped  
+- Order shipped with tracking ID  
 
 Tracking ID is included only when available.
 
@@ -225,11 +226,11 @@ storage/logs/app.log
 
 Logs include:
 
-• Raw payloads  
-• Processing decisions  
-• Duplicate skips  
-• External API errors  
-• Telegram and WhatsApp send attempts  
+- Raw payloads  
+- Processing decisions  
+- Duplicate skips  
+- External API errors  
+- Telegram and WhatsApp send attempts  
 
 Timezone is controlled using:
 
@@ -247,9 +248,9 @@ Source code is mounted from the host.
 
 On every container start:
 
-• Latest main.go is compiled
-• The binary is executed
-• No Docker image rebuild is required
+- Latest main.go is compiled
+- The binary is executed
+- No Docker image rebuild is required
 
 Deployment workflow:
 
@@ -278,11 +279,11 @@ Used by Docker and reverse proxies.
 
 ## Security Hardening
 
-• Root path blocked
-• Unknown paths logged and rejected
-• JSON-only payload acceptance
-• Graceful shutdown on SIGTERM / SIGINT
-• HTTP timeouts configured
+- Root path blocked
+- Unknown paths logged and rejected
+- JSON-only payload acceptance
+- Graceful shutdown on SIGTERM / SIGINT
+- HTTP timeouts configured
 
 ---
 
@@ -290,9 +291,9 @@ Used by Docker and reverse proxies.
 
 saurally-order-relay is a hardened webhook relay that:
 
-• Eliminates duplicate customer notifications  
-• Keeps Mautic CRM data consistent  
-• Provides real-time Telegram visibility  
-• Survives restarts and webhook retries safely  
+- Eliminates duplicate customer notifications  
+- Keeps Mautic CRM data consistent  
+- Provides real-time Telegram visibility  
+- Survives restarts and webhook retries safely  
 
 This README reflects the current live production behavior.
