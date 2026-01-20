@@ -96,11 +96,7 @@ If a marker exists, the event is skipped entirely.
 
 WooCommerce order webhooks are processed based on order status.
 
-Supported statuses:
-
-**processing  
-completed  
-shipped (via metadata)**
+Supported statuses: **processing, completed shipped (via metadata)**
 
 For each order event:
 
@@ -119,24 +115,6 @@ meta_data → _wc_shipment_tracking_items → tracking_number
 When available, the tracking number is appended to the WhatsApp message.
 
 ---
-
-<!-- ## Idempotency and Duplicate Protection
-
-Duplicate processing is prevented using filesystem-based event markers.
-
-For each order state, a marker file is created:
-
-storage/events/order_<ORDER_ID>_<STATE>
-
-If the marker exists:
-
-• Mautic upsert is skipped  
-• WhatsApp message is not sent again  
-• Telegram message is not sent again  
-
-This guarantees exactly-once side effects even if WooCommerce retries webhooks.
-
---- -->
 
 ## Mautic Integration
 
@@ -241,7 +219,9 @@ Logs are written to stdout and to file.
 
 Log file location:
 
+```python
 storage/logs/app.log
+```
 
 Logs include:
 
@@ -253,7 +233,9 @@ Logs include:
 
 Timezone is controlled using:
 
+```python
 TZ=Asia/Kolkata
+```
 
 ---
 
@@ -271,9 +253,10 @@ On every container start:
 
 Deployment workflow:
 
+```python
 git pull  
 docker compose restart  
-
+```
 This guarantees the container always runs the latest code.
 
 ---
@@ -285,7 +268,9 @@ GET /health
 ```
 
 Response:
+```python
 ok
+```
 
 Used by Docker and reverse proxies.
 
