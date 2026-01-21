@@ -169,7 +169,7 @@ Events that trigger Telegram messages:
 
 Telegram configuration is controlled by environment variables:
 
-```json
+```python
 TELEGRAM_ENABLED=true  
 TELEGRAM_BOT_TOKEN=xxxxxxxx  
 TELEGRAM_CHAT_ID=-123456789  
@@ -201,12 +201,12 @@ All persistent data is stored under the mounted storage directory:
 
 ```python
 storage/
-├── gokwik/        Raw GoKwik cart payloads  
-├── woocommerce/  Raw WooCommerce order payloads  
-├── whatsapp/     WhatsApp API responses  
-├── events/       Idempotency marker files  
-├── flags/        Internal flags  
-└── errors/       Reserved for failures  
+├── gokwik/         Raw GoKwik cart payloads  
+├── woocommerce/    Raw WooCommerce order payloads  
+├── whatsapp/       WhatsApp API responses  
+├── events/         Idempotency marker files  
+├── flags/          Internal flags  
+└── errors/         Reserved for failures  
 ```
 
 There is no in-memory state.  
@@ -248,7 +248,7 @@ Source code is mounted from the host.
 
 On every container start:
 
-- Latest main.go is compiled
+- Latest `main.go` is compiled
 - The binary is executed
 - No Docker image rebuild is required
 
@@ -282,7 +282,7 @@ Used by Docker and reverse proxies.
 - Root path blocked
 - Unknown paths logged and rejected
 - JSON-only payload acceptance
-- Graceful shutdown on SIGTERM / SIGINT
+- Graceful shutdown on `SIGTERM/SIGINT`
 - HTTP timeouts configured
 
 ---
