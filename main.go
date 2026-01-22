@@ -52,6 +52,10 @@ var (
 	msgOrderReceived            = os.Getenv("MESSAGE_ID_ORDER_RECEIVED")
 	msgOrderShipped             = os.Getenv("MESSAGE_ID_ORDER_SHIPPED")
 	msgOrderShippedWithTracking = os.Getenv("MESSAGE_ID_ORDER_SHIPPED_WITH_TRACKING")
+
+	telegramToken        = os.Getenv("TELEGRAM_BOT_TOKEN")
+	telegramChatIDABC    = os.Getenv("TELEGRAM_CHAT_ID_ABC")
+	telegramChatIDOrders = os.Getenv("TELEGRAM_CHAT_ID_ORDERS")
 )
 
 //
@@ -255,22 +259,22 @@ func sendWhatsApp(orderID, phone, templateID, variables, state string) error {
 // ------------------------------------------------------------
 //
 
-func sendTelegram(message string) {
+func sendTelegram(message string, chatID string) {
 	if os.Getenv("TELEGRAM_ENABLED") != "true" {
 		return
 	}
 
-	token := os.Getenv("TELEGRAM_BOT_TOKEN")
-	chatID := os.Getenv("TELEGRAM_CHAT_ID")
+	// token := os.Getenv("TELEGRAM_BOT_TOKEN")
+	// chatID := os.Getenv("TELEGRAM_CHAT_ID")
 
-	if token == "" || chatID == "" {
+	if telegramToken == "" || chatID == "" {
 		logger.Println("WARN | telegram | missing config")
 		return
 	}
 
 	url := fmt.Sprintf(
 		"https://api.telegram.org/bot%s/sendMessage",
-		token,
+		telegramToken,
 	)
 
 	payload := map[string]string{
@@ -598,7 +602,7 @@ func abcHandler(w http.ResponseWriter, r *http.Request) {
 				cart["cart_id"],
 			)
 
-			sendTelegram(telegramMessage)
+			sendTelegram(telegramMessage, telegramChatIDABC)
 
 		} else {
 			logger.Printf(
@@ -773,7 +777,7 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 			strings.ToUpper(order["payment_method_title"].(string)),
 			itemsText,
 		)
-		sendTelegram(telegramMessage)
+		sendTelegram(telegramMessage, telegramChatIDOrders)
 	}
 
 	// Send WhatsApp
