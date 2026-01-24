@@ -28,9 +28,8 @@ import (
 
 var (
 	logFile = getEnv("LOG_FILE", "/data/logs/app.log")
-	// dataDir = getEnv("DATA_DIR", "/data/storage")
 
-	dataDir    = "/data"
+	dataDir    = getEnv("DATA_DIR", "/data")
 	storageDir = filepath.Join(dataDir, "storage")
 
 	gokwikDir      = filepath.Join(storageDir, "gokwik")
