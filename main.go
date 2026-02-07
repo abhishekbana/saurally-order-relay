@@ -314,13 +314,149 @@ func sendTelegram(message string, chatID string) {
 	}()
 }
 
-//
 // ------------------------------------------------------------
 // LISTMONK
 // ------------------------------------------------------------
-//
+func listMonkUpsert(newPayload map[string]any) error {
+	if os.Getenv("LISTMONK_ENABLED") != "true" {
+		return nil
+	}
 
-func listMonkUpsert(email, firstName, lastName string, attribs map[string]any, listID int) error {
+	email, _ := newPayload["email"].(string)
+	if email == "" {
+		return fmt.Errorf("email missing for listmonk")
+	}
+
+	baseURL := os.Getenv("LISTMONK_URL")
+	user := os.Getenv("LISTMONK_USER")
+	pass := os.Getenv("LISTMONK_PASS")
+
+	if baseURL == "" || user == "" || pass == "" {
+		return fmt.Errorf("listmonk config missing")
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	// --------------------------------------------------
+	// SEARCH
+	// --------------------------------------------------
+	searchURL := fmt.Sprintf(
+		"%s/api/subscribers?query=email=''%s''",
+		baseURL,
+		email,
+	)
+
+	req, _ := http.NewRequest("GET", searchURL, nil)
+	req.SetBasicAuth(user, pass)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var searchResult map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&searchResult); err != nil {
+		return err
+	}
+
+	results, _ := searchResult["data"].([]any)
+
+	// ==================================================
+	// CREATE
+	// ==================================================
+	if len(results) == 0 {
+		logger.Printf("INFO | listmonk create | email=%s", email)
+
+		createURL := fmt.Sprintf("%s/api/subscribers", baseURL)
+		body, _ := json.Marshal(newPayload)
+
+		req, _ := http.NewRequest("POST", createURL, bytes.NewBuffer(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.SetBasicAuth(user, pass)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return err
+		}
+		resp.Body.Close()
+
+		logger.Printf("INFO | listmonk create success | email=%s", email)
+		return nil
+	}
+
+	// ==================================================
+	// UPDATE
+	// ==================================================
+	existing := results[0].(map[string]any)
+	id := int(existing["id"].(float64))
+
+	logger.Printf("INFO | listmonk update | email=%s | id=%d", email, id)
+
+	// ---- merge lists ----
+	oldListsRaw, _ := existing["lists"].([]any)
+	newListsRaw, _ := newPayload["lists"].([]int)
+
+	listSet := map[int]bool{}
+
+	for _, l := range oldListsRaw {
+		item := l.(map[string]any)
+		listSet[int(item["id"].(float64))] = true
+	}
+
+	for _, l := range newListsRaw {
+		listSet[l] = true
+	}
+
+	var finalLists []int
+	for id := range listSet {
+		finalLists = append(finalLists, id)
+	}
+
+	// ---- merge attribs ----
+	oldAttribs, _ := existing["attribs"].(map[string]any)
+	newAttribs, _ := newPayload["attribs"].(map[string]any)
+
+	if oldAttribs == nil {
+		oldAttribs = map[string]any{}
+	}
+
+	for k, v := range newAttribs {
+		oldAttribs[k] = v
+	}
+
+	// ---- update name ----
+	name := existing["name"]
+	if newName, ok := newPayload["name"]; ok && newName != "" {
+		name = newName
+	}
+
+	updatePayload := map[string]any{
+		"email":   email,
+		"name":    name,
+		"status":  "enabled",
+		"lists":   finalLists,
+		"attribs": oldAttribs,
+	}
+
+	updateURL := fmt.Sprintf("%s/api/subscribers/%d", baseURL, id)
+	body, _ := json.Marshal(updatePayload)
+
+	req, _ = http.NewRequest("PUT", updateURL, bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetBasicAuth(user, pass)
+
+	resp, err = client.Do(req)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+
+	logger.Printf("INFO | listmonk update success | email=%s", email)
+	return nil
+}
+
+func listMonkUpsertOld(email, firstName, lastName string, attribs map[string]any, listID int) error {
 
 	if listMonkBaseURL == "" {
 		return nil
@@ -387,6 +523,36 @@ func listMonkUpsert(email, firstName, lastName string, attribs map[string]any, l
 // ------------------------------------------------------------
 //
 
+// for extracting WooCommerce item names and quantities from order object for Telegram message and ListMonk
+func extractOrderItems(order map[string]any) string {
+	itemsText := ""
+
+	itemsRaw, ok := order["line_items"].([]any)
+	if !ok || len(itemsRaw) == 0 {
+		return "- (items unavailable)\n"
+	}
+
+	for _, it := range itemsRaw {
+		item, ok := it.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		name, _ := item["name"].(string)
+		qtyFloat, _ := item["quantity"].(float64)
+
+		if name != "" {
+			itemsText += fmt.Sprintf("- %s × %d\n", name, int(qtyFloat))
+		}
+	}
+
+	if itemsText == "" {
+		itemsText = "- (items unavailable)\n"
+	}
+
+	return itemsText
+}
+
 // for extracting ABC item names and quantities from cart object for ListMonk an for telegram message
 
 func extractCartItems(cart map[string]any) []string {
@@ -418,33 +584,33 @@ func extractCartItems(cart map[string]any) []string {
 }
 
 // for extracting WooCommerce item names and quantities from order object for ListMonk and for telegram message
-func extractOrderItems(order map[string]any) []string {
-	items := []string{}
+// func extractOrderItems(order map[string]any) []string {
+// 	items := []string{}
 
-	lineItems, ok := order["line_items"].([]any)
-	if !ok {
-		return items
-	}
+// 	lineItems, ok := order["line_items"].([]any)
+// 	if !ok {
+// 		return items
+// 	}
 
-	for _, li := range lineItems {
-		item, ok := li.(map[string]any)
-		if !ok {
-			continue
-		}
+// 	for _, li := range lineItems {
+// 		item, ok := li.(map[string]any)
+// 		if !ok {
+// 			continue
+// 		}
 
-		name, _ := item["name"].(string)
-		qtyFloat, _ := item["quantity"].(float64)
+// 		name, _ := item["name"].(string)
+// 		qtyFloat, _ := item["quantity"].(float64)
 
-		if name != "" {
-			items = append(
-				items,
-				fmt.Sprintf("%s × %d", name, int(qtyFloat)),
-			)
-		}
-	}
+// 		if name != "" {
+// 			items = append(
+// 				items,
+// 				fmt.Sprintf("%s × %d", name, int(qtyFloat)),
+// 			)
+// 		}
+// 	}
 
-	return items
-}
+// 	return items
+// }
 
 func extractProducts(order map[string]any) []string {
 	items, ok := order["line_items"].([]any)
@@ -741,38 +907,55 @@ func abcHandler(w http.ResponseWriter, r *http.Request) {
 			logger.Printf("INFO | abc | mautic upsert success for ABC | email=%s", email)
 		}
 
-		// ---- ListMonk upsert (always sent) ----
-		attribs := map[string]any{
-			"phone":      phone,
-			"cart_url":   cartURL,
-			"abc_stage":  0, // intial stage for all abandoned carts - ABC logic starts from stage 0 in n8n
-			"cart_value": cartValue,
-			"source":     "gokwik_abc",
-			"cart_items": extractCartItems(cart),
-		}
+		// // ---- ListMonk upsert (always sent) ----
+		// attribs := map[string]any{
+		// 	"phone":      phone,
+		// 	"cart_url":   cartURL,
+		// 	"abc_stage":  0, // intial stage for all abandoned carts - ABC logic starts from stage 0 in n8n
+		// 	"cart_value": cartValue,
+		// 	"source":     "gokwik_abc",
+		// 	"cart_items": extractCartItems(cart),
+		// }
 
-		listMonkUpsert(email, firstName, lastName, attribs, 3)
+		// listMonkUpsert(email, firstName, lastName, attribs, 3)
 
 		// ---- extract cart items for Telegram ----
-		itemsText := ""
-		if itemsRaw, ok := cart["items"].([]any); ok && len(itemsRaw) > 0 {
-			for _, it := range itemsRaw {
-				item, ok := it.(map[string]any)
-				if !ok {
-					continue
-				}
+		// itemsText := ""
+		// if itemsRaw, ok := cart["items"].([]any); ok && len(itemsRaw) > 0 {
+		// 	for _, it := range itemsRaw {
+		// 		item, ok := it.(map[string]any)
+		// 		if !ok {
+		// 			continue
+		// 		}
 
-				title, _ := item["title"].(string)
-				qtyFloat, _ := item["quantity"].(float64)
+		// 		title, _ := item["title"].(string)
+		// 		qtyFloat, _ := item["quantity"].(float64)
 
-				if title != "" {
-					itemsText += fmt.Sprintf("• %s × %d\n", title, int(qtyFloat))
-				}
-			}
-		}
+		// 		if title != "" {
+		// 			itemsText += fmt.Sprintf("• %s × %d\n", title, int(qtyFloat))
+		// 		}
+		// 	}
+		// }
 
-		if itemsText == "" {
-			itemsText = "- (items unavailable)\n"
+		// if itemsText == "" {
+		// 	itemsText = "- (items unavailable)\n"
+		// }
+
+		cartItemsWithQty := extractCartItems(cart)
+
+		if err := listMonkUpsert(map[string]any{
+			"email": email,
+			"name":  firstName + " " + lastName,
+			"lists": []int{3},
+			"attribs": map[string]any{
+				"phone":      phone,
+				"cart_url":   cartURL,
+				"abc_stage":  dropStage,
+				"cart_value": cartValue,
+				"cart_items": cartItemsWithQty,
+			},
+		}); err != nil {
+			logger.Printf("ERROR | ListMonk upsert failed for ABC email | email=%s | err=%v", email, err)
 		}
 
 		// ---- Telegram message (send ONLY if abandoned) ----
@@ -793,7 +976,7 @@ func abcHandler(w http.ResponseWriter, r *http.Request) {
 				phone,
 				cartValue,
 				dropStage,
-				itemsText,
+				cartItemsWithQty,
 				cartURL,
 			)
 
@@ -928,16 +1111,22 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 		logger.Printf("INFO | mautic upsert success for order | order_id=%s", orderID)
 	}
 
-	// ListMonk upsert (always sent, even if mautic fails)
-	attribs := map[string]any{
-		"phone":               phone,
-		"last_order_date":     nowISO(),
-		"last_order_id":       orderID,
-		"last_order_products": extractOrderItems(order),
-		"source":              "woocommerce",
-	}
+	OrderedItems := extractOrderItems(order)
 
-	listMonkUpsert(email, firstName, lastName, attribs, 4)
+	if err := listMonkUpsert(map[string]any{
+		"email": email,
+		"name":  firstName + " " + lastName,
+		"lists": []int{4},
+		"attribs": map[string]any{
+			"phone":               phone,
+			"last_order_date":     nowISO(),
+			"last_order_id":       orderID,
+			"last_order_products": OrderedItems,
+			"source":              "woocommerce",
+		},
+	}); err != nil {
+		logger.Printf("ERROR | ListMonk upsert failed for order email | email=%s | err=%v", email, err)
+	}
 
 	// construct telegram messgage and Send only if status is processing
 	if status == "processing" {
@@ -949,26 +1138,26 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 		lastName, _ = billing["last_name"].(string)
 
 		// ---- extract items ----
-		itemsText := ""
-		if itemsRaw, ok := order["line_items"].([]any); ok && len(itemsRaw) > 0 {
-			for _, it := range itemsRaw {
-				item, ok := it.(map[string]any)
-				if !ok {
-					continue
-				}
+		// itemsText := ""
+		// if itemsRaw, ok := order["line_items"].([]any); ok && len(itemsRaw) > 0 {
+		// 	for _, it := range itemsRaw {
+		// 		item, ok := it.(map[string]any)
+		// 		if !ok {
+		// 			continue
+		// 		}
 
-				name, _ := item["name"].(string)
-				qtyFloat, _ := item["quantity"].(float64)
+		// 		name, _ := item["name"].(string)
+		// 		qtyFloat, _ := item["quantity"].(float64)
 
-				if name != "" {
-					itemsText += fmt.Sprintf("- %s × %d\n", name, int(qtyFloat))
-				}
-			}
-		}
+		// 		if name != "" {
+		// 			itemsText += fmt.Sprintf("- %s × %d\n", name, int(qtyFloat))
+		// 		}
+		// 	}
+		// }
 
-		if itemsText == "" {
-			itemsText = "- (items unavailable)\n"
-		}
+		// if itemsText == "" {
+		// 	itemsText = "- (items unavailable)\n"
+		// }
 
 		// HTML formatting of telegram message
 		telegramMessage := fmt.Sprintf(
@@ -987,7 +1176,7 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 			phone,
 			order["total"],
 			strings.ToUpper(order["payment_method_title"].(string)),
-			itemsText,
+			OrderedItems,
 		)
 		sendTelegram(telegramMessage, telegramChatIDOrders)
 	}
