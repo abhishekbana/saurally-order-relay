@@ -375,7 +375,12 @@ func listMonkUpsert(newPayload map[string]any) error {
 		return err
 	}
 
-	results, _ := searchResult["data"].([]any)
+	dataObj, ok := searchResult["data"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("invalid search response structure")
+	}
+
+	results, _ := dataObj["results"].([]any)
 
 	// ==================================================
 	// CREATE
