@@ -970,7 +970,8 @@ func abcHandler(w http.ResponseWriter, r *http.Request) {
 			"attribs": map[string]any{
 				"phone":      phone,
 				"cart_url":   cartURL,
-				"abc_stage":  dropStage,
+				"abc_stage":  0, // intial stage for all abandoned carts - ABC logic starts from stage 0 in n8n
+				"drop_stage": dropStage,
 				"cart_value": cartValue,
 				"cart_items": cartItemsWithQty,
 			},
@@ -1139,10 +1140,16 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 		"lists": []int{4},
 		"attribs": map[string]any{
 			"phone":               phone,
+			"address1":            addressLine1,
+			"address2":            addressLine2,
+			"city":                billing["city"],
+			"pincode":             billing["postcode"],
+			"state":               billing["state"],
 			"last_order_date":     nowISO(),
 			"last_order_id":       orderID,
 			"last_order_products": OrderedItems,
 			"source":              "woocommerce",
+			"abc_stage":           3, // stage 3 and above is for customers in our ABC flow in n8n
 		},
 	}); err != nil {
 		logger.Printf("ERROR | ListMonk upsert failed for order email | email=%s | err=%v", email, err)
