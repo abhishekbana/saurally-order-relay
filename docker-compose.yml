@@ -1,6 +1,6 @@
 services:
   saurally-order-relay:
-    image: golang:1.22-alpine
+    image: golang:1.25-alpine
     container_name: saurally-order-relay
     restart: unless-stopped
 

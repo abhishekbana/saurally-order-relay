@@ -341,10 +341,12 @@ func listMonkUpsert(newPayload map[string]any) error {
 	// SEARCH
 	// --------------------------------------------------
 	searchURL := fmt.Sprintf(
-		"%s/api/subscribers?query=email=''%s''",
+		"%s/api/subscribers?query=email='%s'",
 		baseURL,
 		email,
 	)
+
+	logger.Printf("INFO | listmonk search | email=%s | url=%s", email, searchURL)
 
 	req, _ := http.NewRequest("GET", searchURL, nil)
 	req.SetBasicAuth(user, pass)
@@ -355,8 +357,21 @@ func listMonkUpsert(newPayload map[string]any) error {
 	}
 	defer resp.Body.Close()
 
+	searchBody, _ := io.ReadAll(resp.Body)
+
+	logger.Printf(
+		"DEBUG | listmonk search response | email=%s | status=%d | body=%s",
+		email,
+		resp.StatusCode,
+		string(searchBody),
+	)
+
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("search failed status=%d", resp.StatusCode)
+	}
+
 	var searchResult map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&searchResult); err != nil {
+	if err := json.Unmarshal(searchBody, &searchResult); err != nil {
 		return err
 	}
 
@@ -379,7 +394,7 @@ func listMonkUpsert(newPayload map[string]any) error {
 		if err != nil {
 			return err
 		}
-		resp.Body.Close()
+		defer resp.Body.Close()
 
 		logger.Printf("INFO | listmonk create success | email=%s", email)
 		return nil
@@ -450,9 +465,9 @@ func listMonkUpsert(newPayload map[string]any) error {
 	if err != nil {
 		return err
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
 
-	logger.Printf("INFO | listmonk update success | email=%s", email)
+	logger.Printf("INFO | listmonk update success | email=%s | id=%d", email, id)
 	return nil
 }
 
