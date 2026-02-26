@@ -184,6 +184,10 @@ func normalizeStatus(s string) string {
 //
 
 func mauticUpsert(payload map[string]any) error {
+	if os.Getenv("MAUTIC_ENABLED") != "true" {
+		logger.Printf("INFO | Mautic diabled. Skipping upsert")
+		return nil
+	}
 	if mauticURL == "" {
 		return errors.New("mautic url missing")
 	}
@@ -319,6 +323,7 @@ func sendTelegram(message string, chatID string) {
 // ------------------------------------------------------------
 func listMonkUpsert(newPayload map[string]any) error {
 	if os.Getenv("LISTMONK_ENABLED") != "true" {
+		logger.Printf("INFO | listmonk diabled. Skipping upsert")
 		return nil
 	}
 
@@ -964,9 +969,11 @@ func abcHandler(w http.ResponseWriter, r *http.Request) {
 		cartItemsWithQty := extractCartItems(cart)
 
 		if err := listMonkUpsert(map[string]any{
-			"email": email,
-			"name":  firstName + " " + lastName,
-			"lists": []int{3},
+			"email":                    email,
+			"name":                     firstName + " " + lastName,
+			"lists":                    []int{3},
+			"preconfirm_subscriptions": true,
+			"status":                   "enabled",
 			"attribs": map[string]any{
 				"phone":      phone,
 				"cart_url":   cartURL,
@@ -1135,10 +1142,13 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 	OrderedItems := extractOrderItems(order)
 
 	if err := listMonkUpsert(map[string]any{
-		"email": email,
-		"name":  firstName + " " + lastName,
-		"lists": []int{4},
+		"email":                    email,
+		"name":                     firstName + " " + lastName,
+		"lists":                    []int{4},
+		"preconfirm_subscriptions": true,
+		"status":                   "enabled",
 		"attribs": map[string]any{
+			"company":             billing["company"],
 			"phone":               phone,
 			"address1":            addressLine1,
 			"address2":            addressLine2,
@@ -1148,6 +1158,7 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 			"last_order_date":     nowISO(),
 			"last_order_id":       orderID,
 			"last_order_products": OrderedItems,
+			"last_order_value":    order["total"],
 			"source":              "woocommerce",
 			"abc_stage":           3, // stage 3 and above is for customers in our ABC flow in n8n
 		},
