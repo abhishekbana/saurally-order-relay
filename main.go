@@ -56,7 +56,7 @@ var (
 	telegramChatIDABC    = os.Getenv("TELEGRAM_CHAT_ID_ABC")
 	telegramChatIDOrders = os.Getenv("TELEGRAM_CHAT_ID_ORDERS")
 
-	listMonkBaseURL      = os.Getenv("LISTMONK_BASE_URL")
+	listMonkURL          = os.Getenv("LISTMONK_URL")
 	listMonkUser         = os.Getenv("LISTMONK_USER")
 	listMonkPass         = os.Getenv("LISTMONK_PASS")
 	listMonkListIDABC    = os.Getenv("LISTMONK_LIST_ID_ABC")
@@ -481,67 +481,6 @@ func listMonkUpsert(newPayload map[string]any) error {
 	return nil
 }
 
-func listMonkUpsertOld(email, firstName, lastName string, attribs map[string]any, listID int) error {
-
-	if listMonkBaseURL == "" {
-		return nil
-	}
-
-	subID, oldLists, oldAttribs, err := listMonkGetSubscriber(email)
-	if err != nil {
-		return err
-	}
-
-	name := strings.TrimSpace(firstName + " " + lastName)
-
-	// NEW subscriber
-	if subID == 0 {
-
-		reqPayload := map[string]any{
-			"email":                    email,
-			"name":                     name,
-			"status":                   "enabled",
-			"lists":                    []int{listID},
-			"attribs":                  attribs,
-			"preconfirm_subscriptions": true,
-		}
-
-		body, _ := json.Marshal(reqPayload)
-
-		req, _ := http.NewRequest("POST", listMonkBaseURL+"/api/subscribers", bytes.NewBuffer(body))
-		req.SetBasicAuth(listMonkUser, listMonkPass)
-		req.Header.Set("Content-Type", "application/json")
-
-		_, err := http.DefaultClient.Do(req)
-		return err
-	}
-
-	// EXISTING subscriber → MERGE
-
-	mergedLists := mergeLists(oldLists, listID)
-	mergedAttribs := mergeAttribs(oldAttribs, attribs)
-
-	reqPayload := map[string]any{
-		"email":                    email,
-		"name":                     name,
-		"status":                   "enabled",
-		"lists":                    mergedLists,
-		"attribs":                  mergedAttribs,
-		"preconfirm_subscriptions": true,
-	}
-
-	body, _ := json.Marshal(reqPayload)
-
-	url := fmt.Sprintf("%s/api/subscribers/%d", listMonkBaseURL, subID)
-
-	req, _ := http.NewRequest("PUT", url, bytes.NewBuffer(body))
-	req.SetBasicAuth(listMonkUser, listMonkPass)
-	req.Header.Set("Content-Type", "application/json")
-
-	_, err = http.DefaultClient.Do(req)
-	return err
-}
-
 //
 // ------------------------------------------------------------
 // HELPERS
@@ -607,35 +546,6 @@ func extractCartItems(cart map[string]any) []string {
 
 	return items
 }
-
-// for extracting WooCommerce item names and quantities from order object for ListMonk and for telegram message
-// func extractOrderItems(order map[string]any) []string {
-// 	items := []string{}
-
-// 	lineItems, ok := order["line_items"].([]any)
-// 	if !ok {
-// 		return items
-// 	}
-
-// 	for _, li := range lineItems {
-// 		item, ok := li.(map[string]any)
-// 		if !ok {
-// 			continue
-// 		}
-
-// 		name, _ := item["name"].(string)
-// 		qtyFloat, _ := item["quantity"].(float64)
-
-// 		if name != "" {
-// 			items = append(
-// 				items,
-// 				fmt.Sprintf("%s × %d", name, int(qtyFloat)),
-// 			)
-// 		}
-// 	}
-
-// 	return items
-// }
 
 func extractProducts(order map[string]any) []string {
 	items, ok := order["line_items"].([]any)
@@ -725,64 +635,6 @@ func isDuplicateEvent(key string) bool {
 	)
 
 	return false
-}
-
-func listMonkGetSubscriber(email string) (int, []int, map[string]any, error) {
-	url := fmt.Sprintf("%s/api/subscribers?query=email = \"%s\"", listMonkBaseURL, email)
-
-	req, _ := http.NewRequest("GET", url, nil)
-	req.SetBasicAuth(listMonkUser, listMonkPass)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return 0, nil, nil, err
-	}
-	defer resp.Body.Close()
-
-	var out map[string]any
-	json.NewDecoder(resp.Body).Decode(&out)
-
-	data, _ := out["data"].([]any)
-	if len(data) == 0 {
-		return 0, nil, nil, nil
-	}
-
-	sub := data[0].(map[string]any)
-
-	// id
-	id := int(sub["id"].(float64))
-
-	// existing lists
-	existingLists := []int{}
-	if listsRaw, ok := sub["lists"].([]any); ok {
-		for _, l := range listsRaw {
-			existingLists = append(existingLists, int(l.(float64)))
-		}
-	}
-
-	// existing attribs
-	existingAttribs := map[string]any{}
-	if a, ok := sub["attribs"].(map[string]any); ok {
-		existingAttribs = a
-	}
-
-	return id, existingLists, existingAttribs, nil
-}
-
-func mergeLists(old []int, newList int) []int {
-	for _, l := range old {
-		if l == newList {
-			return old
-		}
-	}
-	return append(old, newList)
-}
-
-func mergeAttribs(old, new map[string]any) map[string]any {
-	for k, v := range new {
-		old[k] = v // overwrite same keys, keep others
-	}
-	return old
 }
 
 //
@@ -931,40 +783,6 @@ func abcHandler(w http.ResponseWriter, r *http.Request) {
 		} else {
 			logger.Printf("INFO | abc | mautic upsert success for ABC | email=%s", email)
 		}
-
-		// // ---- ListMonk upsert (always sent) ----
-		// attribs := map[string]any{
-		// 	"phone":      phone,
-		// 	"cart_url":   cartURL,
-		// 	"abc_stage":  0, // intial stage for all abandoned carts - ABC logic starts from stage 0 in n8n
-		// 	"cart_value": cartValue,
-		// 	"source":     "gokwik_abc",
-		// 	"cart_items": extractCartItems(cart),
-		// }
-
-		// listMonkUpsert(email, firstName, lastName, attribs, 3)
-
-		// ---- extract cart items for Telegram ----
-		// itemsText := ""
-		// if itemsRaw, ok := cart["items"].([]any); ok && len(itemsRaw) > 0 {
-		// 	for _, it := range itemsRaw {
-		// 		item, ok := it.(map[string]any)
-		// 		if !ok {
-		// 			continue
-		// 		}
-
-		// 		title, _ := item["title"].(string)
-		// 		qtyFloat, _ := item["quantity"].(float64)
-
-		// 		if title != "" {
-		// 			itemsText += fmt.Sprintf("• %s × %d\n", title, int(qtyFloat))
-		// 		}
-		// 	}
-		// }
-
-		// if itemsText == "" {
-		// 	itemsText = "- (items unavailable)\n"
-		// }
 
 		cartItemsWithQty := extractCartItems(cart)
 
@@ -1174,28 +992,6 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 		phone, _ = billing["phone"].(string)
 		firstName, _ = billing["first_name"].(string)
 		lastName, _ = billing["last_name"].(string)
-
-		// ---- extract items ----
-		// itemsText := ""
-		// if itemsRaw, ok := order["line_items"].([]any); ok && len(itemsRaw) > 0 {
-		// 	for _, it := range itemsRaw {
-		// 		item, ok := it.(map[string]any)
-		// 		if !ok {
-		// 			continue
-		// 		}
-
-		// 		name, _ := item["name"].(string)
-		// 		qtyFloat, _ := item["quantity"].(float64)
-
-		// 		if name != "" {
-		// 			itemsText += fmt.Sprintf("- %s × %d\n", name, int(qtyFloat))
-		// 		}
-		// 	}
-		// }
-
-		// if itemsText == "" {
-		// 	itemsText = "- (items unavailable)\n"
-		// }
 
 		// HTML formatting of telegram message
 		telegramMessage := fmt.Sprintf(
