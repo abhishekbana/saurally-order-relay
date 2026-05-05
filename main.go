@@ -185,7 +185,7 @@ func normalizeStatus(s string) string {
 
 func mauticUpsert(payload map[string]any) error {
 	if os.Getenv("MAUTIC_ENABLED") != "true" {
-		logger.Printf("INFO | Mautic diabled. Skipping upsert")
+		logger.Printf("INFO | Mautic disabled. Skipping upsert")
 		return nil
 	}
 	if mauticURL == "" {
@@ -273,9 +273,6 @@ func sendTelegram(message string, chatID string) {
 		return
 	}
 
-	// token := os.Getenv("TELEGRAM_BOT_TOKEN")
-	// chatID := os.Getenv("TELEGRAM_CHAT_ID")
-
 	if telegramToken == "" || chatID == "" {
 		logger.Println("WARN | telegram | missing config")
 		return
@@ -323,7 +320,7 @@ func sendTelegram(message string, chatID string) {
 // ------------------------------------------------------------
 func listMonkUpsert(newPayload map[string]any) error {
 	if os.Getenv("LISTMONK_ENABLED") != "true" {
-		logger.Printf("INFO | listmonk diabled. Skipping upsert")
+		logger.Printf("INFO | listmonk disabled. Skipping upsert")
 		return nil
 	}
 
@@ -576,7 +573,7 @@ func truncate(s string, max int) string {
 	return s[:max]
 }
 
-// Extraxt shipment tracking number from order meta_data
+// Extract shipment tracking number from order meta_data
 func extractTrackingNumber(order map[string]any) string {
 	metaRaw, ok := order["meta_data"].([]any)
 	if !ok {
