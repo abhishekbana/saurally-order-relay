@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,8 +13,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 )
@@ -38,11 +37,6 @@ var (
 	eventsDir      = filepath.Join(storageDir, "events")
 	errorsDir      = filepath.Join(storageDir, "errors")
 
-	// Mautic
-	mauticURL  = os.Getenv("MAUTIC_URL")
-	mauticUser = os.Getenv("MAUTIC_USER")
-	mauticPass = os.Getenv("MAUTIC_PASS")
-
 	// Fast2SMS WhatsApp
 	fast2SMSURL   = getEnv("FAST2SMS_WHATSAPP_URL", "https://www.fast2sms.com/dev/whatsapp")
 	fast2SMSKey   = os.Getenv("FAST2SMS_API_KEY")
@@ -52,15 +46,17 @@ var (
 	msgOrderShipped             = os.Getenv("MESSAGE_ID_ORDER_SHIPPED")
 	msgOrderShippedWithTracking = os.Getenv("MESSAGE_ID_ORDER_SHIPPED_WITH_TRACKING")
 
+	telegramEnabled      = os.Getenv("TELEGRAM_ENABLED") == "true"
 	telegramToken        = os.Getenv("TELEGRAM_BOT_TOKEN")
 	telegramChatIDABC    = os.Getenv("TELEGRAM_CHAT_ID_ABC")
 	telegramChatIDOrders = os.Getenv("TELEGRAM_CHAT_ID_ORDERS")
 
+	listMonkEnabled      = os.Getenv("LISTMONK_ENABLED") == "true"
 	listMonkURL          = os.Getenv("LISTMONK_URL")
 	listMonkUser         = os.Getenv("LISTMONK_USER")
 	listMonkPass         = os.Getenv("LISTMONK_PASS")
-	listMonkListIDABC    = os.Getenv("LISTMONK_LIST_ID_ABC")
-	listMonkListIDOrders = os.Getenv("LISTMONK_LIST_ID_ORDERS")
+	listMonkListIDABC    = envInt("LISTMONK_LIST_ID_ABC")
+	listMonkListIDOrders = envInt("LISTMONK_LIST_ID_ORDERS")
 )
 
 //
@@ -70,8 +66,7 @@ var (
 //
 
 var (
-	logger   *log.Logger
-	fileLock sync.Mutex
+	logger *log.Logger
 )
 
 //
@@ -85,6 +80,11 @@ func getEnv(k, d string) string {
 		return v
 	}
 	return d
+}
+
+func envInt(k string) int {
+	n, _ := strconv.Atoi(os.Getenv(k))
+	return n
 }
 
 func nowISO() string {
@@ -179,50 +179,6 @@ func normalizeStatus(s string) string {
 
 //
 // ------------------------------------------------------------
-// MAUTIC
-// ------------------------------------------------------------
-//
-
-func mauticUpsert(payload map[string]any) error {
-	if os.Getenv("MAUTIC_ENABLED") != "true" {
-		logger.Printf("INFO | Mautic disabled. Skipping upsert")
-		return nil
-	}
-	if mauticURL == "" {
-		return errors.New("mautic url missing")
-	}
-
-	body, _ := json.Marshal(payload)
-
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // for internal mautic
-	}
-	client := &http.Client{Transport: tr, Timeout: 15 * time.Second}
-
-	req, err := http.NewRequest("POST", mauticURL, strings.NewReader(string(body)))
-	if err != nil {
-		return err
-	}
-
-	req.SetBasicAuth(mauticUser, mauticPass)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("status=%d body=%s", resp.StatusCode, string(b))
-	}
-
-	return nil
-}
-
-//
-// ------------------------------------------------------------
 // WHATSAPP
 // ------------------------------------------------------------
 //
@@ -269,7 +225,7 @@ func sendWhatsApp(orderID, phone, templateID, variables, state string) error {
 //
 
 func sendTelegram(message string, chatID string) {
-	if os.Getenv("TELEGRAM_ENABLED") != "true" {
+	if !telegramEnabled {
 		return
 	}
 
@@ -319,7 +275,7 @@ func sendTelegram(message string, chatID string) {
 // LISTMONK
 // ------------------------------------------------------------
 func listMonkUpsert(newPayload map[string]any) error {
-	if os.Getenv("LISTMONK_ENABLED") != "true" {
+	if !listMonkEnabled {
 		logger.Printf("INFO | listmonk disabled. Skipping upsert")
 		return nil
 	}
@@ -329,11 +285,7 @@ func listMonkUpsert(newPayload map[string]any) error {
 		return fmt.Errorf("email missing for listmonk")
 	}
 
-	baseURL := os.Getenv("LISTMONK_URL")
-	user := os.Getenv("LISTMONK_USER")
-	pass := os.Getenv("LISTMONK_PASS")
-
-	if baseURL == "" || user == "" || pass == "" {
+	if listMonkURL == "" || listMonkUser == "" || listMonkPass == "" {
 		return fmt.Errorf("listmonk config missing")
 	}
 
@@ -344,14 +296,14 @@ func listMonkUpsert(newPayload map[string]any) error {
 	// --------------------------------------------------
 	searchURL := fmt.Sprintf(
 		"%s/api/subscribers?query=email='%s'",
-		baseURL,
+		listMonkURL,
 		email,
 	)
 
 	logger.Printf("INFO | listmonk search | email=%s | url=%s", email, searchURL)
 
 	req, _ := http.NewRequest("GET", searchURL, nil)
-	req.SetBasicAuth(user, pass)
+	req.SetBasicAuth(listMonkUser, listMonkPass)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -390,12 +342,12 @@ func listMonkUpsert(newPayload map[string]any) error {
 	if len(results) == 0 {
 		logger.Printf("INFO | listmonk create | email=%s", email)
 
-		createURL := fmt.Sprintf("%s/api/subscribers", baseURL)
+		createURL := fmt.Sprintf("%s/api/subscribers", listMonkURL)
 		body, _ := json.Marshal(newPayload)
 
 		req, _ := http.NewRequest("POST", createURL, bytes.NewBuffer(body))
 		req.Header.Set("Content-Type", "application/json")
-		req.SetBasicAuth(user, pass)
+		req.SetBasicAuth(listMonkUser, listMonkPass)
 
 		resp, err := client.Do(req)
 		if err != nil {
@@ -473,12 +425,12 @@ func listMonkUpsert(newPayload map[string]any) error {
 		"attribs": oldAttribs,
 	}
 
-	updateURL := fmt.Sprintf("%s/api/subscribers/%d", baseURL, id)
+	updateURL := fmt.Sprintf("%s/api/subscribers/%d", listMonkURL, id)
 	body, _ := json.Marshal(updatePayload)
 
 	req, _ = http.NewRequest("PUT", updateURL, bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.SetBasicAuth(user, pass)
+	req.SetBasicAuth(listMonkUser, listMonkPass)
 
 	resp, err = client.Do(req)
 	if err != nil {
@@ -556,25 +508,6 @@ func extractCartItems(cart map[string]any) []string {
 	return items
 }
 
-func extractProducts(order map[string]any) []string {
-	items, ok := order["line_items"].([]any)
-	if !ok {
-		return nil
-	}
-	var names []string
-	for _, i := range items {
-		m, ok := i.(map[string]any)
-		if !ok {
-			continue
-		}
-		name, _ := m["name"].(string)
-		if name != "" {
-			names = append(names, name)
-		}
-	}
-	return names
-}
-
 func getMap(m map[string]any, key string) (map[string]any, bool) {
 	v, ok := m[key]
 	if !ok || v == nil {
@@ -582,13 +515,6 @@ func getMap(m map[string]any, key string) (map[string]any, bool) {
 	}
 	mv, ok := v.(map[string]any)
 	return mv, ok
-}
-
-func truncate(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	return s[:max]
 }
 
 // Extract shipment tracking number from order meta_data
@@ -774,41 +700,12 @@ func abcHandler(w http.ResponseWriter, r *http.Request) {
 			cart["cart_id"],
 		)
 
-		// ---- mautic payload (always sent) ----
-		mauticPayload := map[string]any{
-			"email":                    email,
-			"firstname":                firstName,
-			"lastname":                 lastName,
-			"mobile":                   phone,
-			"phone":                    phone,
-			"lead_source":              "gokwik",
-			"cart_url":                 cartURL,
-			"cart_value":               cartValue,
-			"drop_stage":               dropStage,
-			"last_abandoned_cart_date": nowISO(),
-			"tags":                     "source:gokwik,intent:abandoned-cart",
-			"abc_cupon5_sent":          false,
-			"abc1":                     false,
-			"abc2":                     false,
-			"abc3":                     false,
-		}
-
-		if err := mauticUpsert(mauticPayload); err != nil {
-			logger.Printf(
-				"ERROR | abc | mautic upsert failed for ABC | email=%s | err=%v",
-				email,
-				err,
-			)
-		} else {
-			logger.Printf("INFO | abc | mautic upsert success for ABC | email=%s", email)
-		}
-
 		cartItemsWithQty := extractCartItems(cart)
 
 		if err := listMonkUpsert(map[string]any{
 			"email":                    email,
 			"name":                     firstName + " " + lastName,
-			"lists":                    []int{3},
+			"lists":                    []int{listMonkListIDABC},
 			"preconfirm_subscriptions": true,
 			"status":                   "enabled",
 			"attribs": map[string]any{
@@ -951,42 +848,12 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 		order["status"],
 	)
 
-	mauticPayload := map[string]any{
-		"firstname":       firstName,
-		"lastname":        lastName,
-		"email":           email,
-		"mobile":          phone,
-		"phone":           phone,
-		"address1":        truncate(addressLine1, 64),
-		"address2":        truncate(addressLine2, 64),
-		"city":            billing["city"],
-		"zipcode":         billing["postcode"],
-		"last_order_id":   orderID,
-		"last_order_date": nowISO(),
-		// "first_order_date": todayDDMMYYYY(),
-		"last_order_value":   order["total"],
-		"has_purchased":      true,
-		"last_product_names": strings.Join(extractProducts(order), ", "),
-		"lead_source":        "woocommerce",
-		"tags":               []string{"source:website", "type:website-customer"},
-		"abc_cupon5_sent":    true,
-		"abc1":               true,
-		"abc2":               true,
-		"abc3":               true,
-	}
-
-	if err := mauticUpsert(mauticPayload); err != nil {
-		logger.Printf("ERROR | mautic upsert failed for order | order_id=%s | err=%v", orderID, err)
-	} else {
-		logger.Printf("INFO | mautic upsert success for order | order_id=%s", orderID)
-	}
-
 	OrderedItems := extractOrderItems(order)
 
 	if err := listMonkUpsert(map[string]any{
 		"email":                    email,
 		"name":                     firstName + " " + lastName,
-		"lists":                    []int{4},
+		"lists":                    []int{listMonkListIDOrders},
 		"preconfirm_subscriptions": true,
 		"status":                   "enabled",
 		"attribs": map[string]any{
@@ -1008,15 +875,8 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 		logger.Printf("ERROR | ListMonk upsert failed for order email | email=%s | err=%v", email, err)
 	}
 
-	// construct telegram messgage and Send only if status is processing
+	// Send telegram only if status is processing
 	if status == "processing" {
-		// ---- extract billing details ----
-		billing, _ = order["billing"].(map[string]any)
-		email, _ = billing["email"].(string)
-		phone, _ = billing["phone"].(string)
-		firstName, _ = billing["first_name"].(string)
-		lastName, _ = billing["last_name"].(string)
-
 		// HTML formatting of telegram message
 		telegramMessage := fmt.Sprintf(
 			"📦 <b>New Order</b>\n\n"+
