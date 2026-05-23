@@ -410,8 +410,15 @@ func listMonkUpsert(newPayload map[string]any) error {
 	// ==================================================
 	// UPDATE
 	// ==================================================
-	existing := results[0].(map[string]any)
-	id := int(existing["id"].(float64))
+	existing, ok := results[0].(map[string]any)
+	if !ok {
+		return fmt.Errorf("listmonk: unexpected subscriber format")
+	}
+	idFloat, ok := existing["id"].(float64)
+	if !ok {
+		return fmt.Errorf("listmonk: subscriber id missing")
+	}
+	id := int(idFloat)
 
 	logger.Printf("INFO | listmonk update | email=%s | id=%d", email, id)
 
@@ -422,8 +429,13 @@ func listMonkUpsert(newPayload map[string]any) error {
 	listSet := map[int]bool{}
 
 	for _, l := range oldListsRaw {
-		item := l.(map[string]any)
-		listSet[int(item["id"].(float64))] = true
+		item, ok := l.(map[string]any)
+		if !ok {
+			continue
+		}
+		if lid, ok := item["id"].(float64); ok {
+			listSet[int(lid)] = true
+		}
 	}
 
 	for _, l := range newListsRaw {
@@ -551,8 +563,14 @@ func extractProducts(order map[string]any) []string {
 	}
 	var names []string
 	for _, i := range items {
-		m := i.(map[string]any)
-		names = append(names, m["name"].(string))
+		m, ok := i.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := m["name"].(string)
+		if name != "" {
+			names = append(names, name)
+		}
 	}
 	return names
 }
@@ -914,6 +932,7 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 
 	orderID := fmt.Sprintf("%v", order["id"])
 	status := normalizeStatus(fmt.Sprintf("%v", order["status"]))
+	paymentMethod, _ := order["payment_method_title"].(string)
 
 	eventKey := fmt.Sprintf("order_%s_%s", orderID, status)
 
@@ -1014,7 +1033,7 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 			email,
 			phone,
 			order["total"],
-			strings.ToUpper(order["payment_method_title"].(string)),
+			strings.ToUpper(paymentMethod),
 			OrderedItems,
 		)
 		sendTelegram(telegramMessage, telegramChatIDOrders)
@@ -1029,14 +1048,14 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 		} else {
 			vars := fmt.Sprintf(
 				"%s|%s|%s|Rs. %v/-|%s",
-				billing["first_name"],
+				firstName,
 				orderID,
 				todayDDMMYYYY(),
 				order["total"],
-				strings.ToUpper(order["payment_method_title"].(string)),
+				strings.ToUpper(paymentMethod),
 			)
 
-			if err := sendWhatsApp(orderID, billing["phone"].(string), msgOrderReceived, vars, "processing"); err != nil {
+			if err := sendWhatsApp(orderID, phone, msgOrderReceived, vars, "processing"); err != nil {
 				logger.Printf("ERROR | whatsapp failed | order_id=%s | state=processing | err=%v", orderID, err)
 			} else {
 				createFlag(flag)
@@ -1056,7 +1075,7 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 			if trackingNumber == "" {
 				vars = fmt.Sprintf(
 					"%s|%s|%s",
-					billing["first_name"],
+					firstName,
 					orderID,
 					todayDDMMYYYY(),
 				)
@@ -1064,14 +1083,14 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 			} else {
 				vars = fmt.Sprintf(
 					"%s|%s|%s|%s",
-					billing["first_name"],
+					firstName,
 					orderID,
 					todayDDMMYYYY(),
 					trackingNumber,
 				)
 				messageID = msgOrderShippedWithTracking
 			}
-			if err := sendWhatsApp(orderID, billing["phone"].(string), messageID, vars, "fulfilled"); err != nil {
+			if err := sendWhatsApp(orderID, phone, messageID, vars, "fulfilled"); err != nil {
 				logger.Printf("ERROR | whatsapp failed | order_id=%s | state=fulfilled | err=%v", orderID, err)
 			} else {
 				createFlag(flag)
