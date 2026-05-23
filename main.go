@@ -730,6 +730,10 @@ func abcHandler(w http.ResponseWriter, r *http.Request) {
 		firstName, _ := customer["firstname"].(string)
 		lastName, _ := customer["lastname"].(string)
 
+		address, _ := cart["address"].(map[string]any)
+		city, _ := address["city"].(string)
+		state, _ := address["state"].(string)
+
 		if email == "" || phone == "" || firstName == "" {
 			logger.Printf(
 				"ERROR | abc | missing critical customer fields | email=%q phone=%q firstname=%q cart_id=%v",
@@ -809,6 +813,8 @@ func abcHandler(w http.ResponseWriter, r *http.Request) {
 					"<b>Name:</b> %s %s\n"+
 					"<b>Email:</b> %s\n"+
 					"<b>Phone:</b> %s\n"+
+					"<b>City:</b> %s\n"+
+					"<b>State:</b> %s\n"+
 					"<b>Cart Value:</b> ₹%v\n"+
 					"<b>Stage:</b> %s\n\n"+
 					"<b>Items:</b>\n%s\n"+
@@ -817,6 +823,8 @@ func abcHandler(w http.ResponseWriter, r *http.Request) {
 				lastName,
 				email,
 				phone,
+				city,
+				state,
 				cartValue,
 				dropStage,
 				cartItemsWithQty,
