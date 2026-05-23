@@ -827,7 +827,7 @@ func abcHandler(w http.ResponseWriter, r *http.Request) {
 				state,
 				cartValue,
 				dropStage,
-				cartItemsWithQty,
+				"• "+strings.Join(cartItemsWithQty, "\n• "),
 				cartURL,
 			)
 
