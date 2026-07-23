@@ -45,6 +45,7 @@ var (
 	msgOrderReceived            = os.Getenv("MESSAGE_ID_ORDER_RECEIVED")
 	msgOrderShipped             = os.Getenv("MESSAGE_ID_ORDER_SHIPPED")
 	msgOrderShippedWithTracking = os.Getenv("MESSAGE_ID_ORDER_SHIPPED_WITH_TRACKING")
+	msgABC1                     = os.Getenv("MESSAGE_ID_ABC1")
 
 	telegramEnabled      = os.Getenv("TELEGRAM_ENABLED") == "true"
 	telegramToken        = os.Getenv("TELEGRAM_BOT_TOKEN")
@@ -753,6 +754,15 @@ func abcHandler(w http.ResponseWriter, r *http.Request) {
 			)
 
 			sendTelegram(telegramMessage, telegramChatIDABC)
+
+			// WhatsApp ABC1 notification
+			cartID := fmt.Sprintf("%v", cart["cart_id"])
+			vars := fmt.Sprintf("%s|%v", firstName, cartValue)
+			if err := sendWhatsApp(cartID, phone, msgABC1, vars, "abc1"); err != nil {
+				logger.Printf("ERROR | whatsapp abc1 failed | cart_id=%s | err=%v", cartID, err)
+			} else {
+				logger.Printf("INFO | whatsapp abc1 sent | cart_id=%s", cartID)
+			}
 
 		} else {
 			logger.Printf(
