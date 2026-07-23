@@ -841,6 +841,17 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 	status := normalizeStatus(fmt.Sprintf("%v", order["status"]))
 	paymentMethod, _ := order["payment_method_title"].(string)
 
+	if status == "" {
+		logger.Printf(
+			"INFO | woocommerce | status ignored | order_id=%s | raw_status=%v",
+			orderID,
+			order["status"],
+		)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ignored"}`))
+		return
+	}
+
 	eventKey := fmt.Sprintf("order_%s_%s", orderID, status)
 
 	if isDuplicateEvent(eventKey) {
