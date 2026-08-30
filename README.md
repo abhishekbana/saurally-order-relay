@@ -9,6 +9,7 @@ Webhook relay service written in Go. Receives commerce events from WooCommerce a
 | Endpoint      | Method | Source     | Purpose                        |
 |---------------|--------|------------|--------------------------------|
 | /woocommerce  | POST   | WooCommerce | Order lifecycle processing    |
+| /medusa-order | POST   | Medusa      | Order lifecycle processing (disabled until `MEDUSA_ORDER_ENABLED=true`) |
 | /abc          | POST   | GoKwik      | Abandoned cart ingestion      |
 | /health       | GET    | Internal    | Health check                  |
 | /(root)       | ANY    | Bots        | Blocked and logged            |
@@ -26,6 +27,42 @@ Webhook relay service written in Go. Receives commerce events from WooCommerce a
 | duplicate webhook        | ❌ Skipped      | ❌ Skipped        | ❌ Skipped  | Yes   |
 
 Tracking ID extracted from `meta_data → _wc_shipment_tracking_items → tracking_number`.
+
+---
+
+## Medusa Order Logic
+
+Disabled by default — while `MEDUSA_ORDER_ENABLED` isn't `"true"`, the endpoint
+returns `503` and does nothing else (no storage, no dedup, no downstream calls).
+
+Every request must carry a valid `X-Medusa-Signature: sha256=<hex hmac>`
+header — an HMAC-SHA256 over the *exact raw request body bytes*, keyed with
+`ORDER_RELAY_SECRET` (shared secret, set on both sides, never committed).
+Verified with a constant-time comparison (`hmac.Equal`) before the body is
+parsed as JSON. Missing/invalid signature → `401`. If `ORDER_RELAY_SECRET`
+isn't configured on this side, every request is rejected with `500` (fails
+closed, never open).
+
+Once enabled, mirrors the WooCommerce order flow and shares the same
+Listmonk list (`LISTMONK_LIST_ID_ORDERS`), Telegram channel
+(`TELEGRAM_CHAT_ID_ORDERS`) and WhatsApp template IDs.
+
+| Event / Condition        | Listmonk Upsert | WhatsApp                 | Telegram    | Dedup |
+|---------------------------|-----------------|---------------------------|-------------|-------|
+| order.placed               | ✅              | ✅ Order Received         | ✅ New Order | Yes  |
+| order.shipped (tracking)   | ✅              | ✅ Shipped + tracking     | ❌          | Yes   |
+| order.shipped (no tracking)| ✅              | ✅ Shipped                | ❌          | Yes   |
+| order.canceled             | ❌              | ❌                        | ❌          | Yes (stored only) |
+| duplicate webhook          | ❌ Skipped      | ❌ Skipped                | ❌ Skipped  | Yes   |
+
+Notes:
+- `order.id` (Medusa's internal id) is used for dedup/idempotency keys;
+  `order.display_id` (human-facing number) is what's shown in Telegram/WhatsApp messages.
+- For `pcod` (partial COD) orders, the WhatsApp "order received" message shows
+  the outstanding `cod_balance` instead of the full `order.total`, since the
+  advance was already paid online.
+- Tracking comes directly from the `tracking` object in the payload — no
+  parsing required (unlike WooCommerce's `meta_data` extraction).
 
 ---
 
@@ -87,6 +124,10 @@ LISTMONK_LIST_ID_ORDERS=2
 # WhatsApp (Fast2SMS)
 FAST2SMS_WHATSAPP_URL=https://www.fast2sms.com/dev/whatsapp
 
+# Medusa (order webhook)
+MEDUSA_ORDER_ENABLED=false
+ORDER_RELAY_SECRET=xxxxxxxx
+
 # Timezone
 TZ=Asia/Kolkata
 ```
@@ -99,6 +140,7 @@ TZ=Asia/Kolkata
 storage/
 ├── gokwik/       Raw GoKwik payloads
 ├── woocommerce/  Raw WooCommerce payloads
+├── medusa/       Raw Medusa order payloads
 ├── whatsapp/     WhatsApp API responses
 ├── events/       Idempotency markers
 ├── flags/        Internal flags

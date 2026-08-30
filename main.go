@@ -3,6 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -58,6 +61,12 @@ var (
 	listMonkPass         = os.Getenv("LISTMONK_PASS")
 	listMonkListIDABC    = envInt("LISTMONK_LIST_ID_ABC")
 	listMonkListIDOrders = envInt("LISTMONK_LIST_ID_ORDERS")
+
+	// Off by default while the Medusa integration is still being tested.
+	medusaOrderEnabled = os.Getenv("MEDUSA_ORDER_ENABLED") == "true"
+
+	// Shared secret for verifying X-Medusa-Signature on /medusa-order.
+	orderRelaySecret = os.Getenv("ORDER_RELAY_SECRET")
 )
 
 //
@@ -469,6 +478,49 @@ func extractOrderItems(order map[string]any) string {
 
 		if name != "" {
 			itemsText += fmt.Sprintf("- %s × %d\n", name, int(qtyFloat))
+		}
+	}
+
+	if itemsText == "" {
+		itemsText = "- (items unavailable)\n"
+	}
+
+	return itemsText
+}
+
+// verifyMedusaSignature checks X-Medusa-Signature (sha256=<hex hmac>) against
+// the exact raw request body bytes, using a constant-time comparison.
+// Must be called BEFORE the body is JSON-decoded — re-encoding a parsed
+// object can change key ordering/spacing and break the signature even with
+// the correct secret.
+func verifyMedusaSignature(rawBody []byte, signatureHeader string) bool {
+	if !strings.HasPrefix(signatureHeader, "sha256=") {
+		return false
+	}
+
+	mac := hmac.New(sha256.New, []byte(orderRelaySecret))
+	mac.Write(rawBody)
+	expected := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+
+	return hmac.Equal([]byte(expected), []byte(signatureHeader))
+}
+
+// for extracting Medusa item names and quantities from the envelope's top-level
+// items[] for Telegram message and ListMonk
+func extractMedusaItems(itemsRaw []any) string {
+	itemsText := ""
+
+	for _, it := range itemsRaw {
+		item, ok := it.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		title, _ := item["title"].(string)
+		qtyFloat, _ := item["quantity"].(float64)
+
+		if title != "" {
+			itemsText += fmt.Sprintf("- %s × %d\n", title, int(qtyFloat))
 		}
 	}
 
@@ -984,6 +1036,233 @@ func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"status":"ok"}`))
 }
 
+// Medusa order webhook handler (order.placed / order.shipped / order.canceled)
+func medusaOrderHandler(w http.ResponseWriter, r *http.Request) {
+	// Endpoint is still being tested — reject everything until explicitly enabled.
+	if !medusaOrderEnabled {
+		logger.Printf("INFO | medusa | endpoint disabled | ip=%s", r.RemoteAddr)
+		http.Error(w, "medusa order endpoint disabled", http.StatusServiceUnavailable)
+		return
+	}
+
+	ct := r.Header.Get("Content-Type")
+	if !strings.Contains(ct, "application/json") {
+		logger.Printf(
+			"INFO | medusa non-json webhook ignored | content-type=%s",
+			ct,
+		)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ignored"}`))
+		return
+	}
+
+	// Read raw body
+	rawBody, err := io.ReadAll(r.Body)
+	if err != nil {
+		logger.Printf("ERROR | medusa | failed to read body | err=%v", err)
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+
+	// Verify signature against the exact raw body bytes, before any parsing/logging.
+	if orderRelaySecret == "" {
+		logger.Printf("ERROR | medusa | ORDER_RELAY_SECRET not configured | rejecting request")
+		http.Error(w, "signature verification not configured", http.StatusInternalServerError)
+		return
+	}
+
+	if !verifyMedusaSignature(rawBody, r.Header.Get("X-Medusa-Signature")) {
+		logger.Printf("WARN | medusa | signature verification failed | ip=%s", r.RemoteAddr)
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
+		return
+	}
+
+	logger.Printf("DEBUG | medusa raw payload | %s", string(rawBody))
+
+	// Restore body for JSON decoding
+	r.Body = io.NopCloser(bytes.NewBuffer(rawBody))
+
+	var envelope map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
+		logger.Printf("ERROR | medusa | json decode failed | err=%v", err)
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+
+	event, _ := envelope["event"].(string)
+
+	order, ok := getMap(envelope, "order")
+	if !ok {
+		logger.Printf("ERROR | medusa payload invalid | event=%s | reason=order_missing", event)
+		http.Error(w, "invalid payload: order missing", http.StatusBadRequest)
+		return
+	}
+
+	customer, ok := getMap(envelope, "customer")
+	if !ok {
+		logger.Printf("ERROR | medusa payload invalid | event=%s | reason=customer_missing", event)
+		http.Error(w, "invalid payload: customer missing", http.StatusBadRequest)
+		return
+	}
+
+	// nullable in the spec — reads against a nil map are safe (zero value, no panic)
+	shippingAddress, _ := getMap(envelope, "shipping_address")
+
+	orderID := fmt.Sprintf("%v", order["id"])
+	displayIDFloat, _ := order["display_id"].(float64)
+	displayID := fmt.Sprintf("%v", int(displayIDFloat))
+	paymentMethod, _ := order["payment_method"].(string)
+
+	eventKey := fmt.Sprintf("medusa_order_%s_%s", orderID, event)
+
+	if isDuplicateEvent(eventKey) {
+		logger.Printf("INFO | medusa | duplicate event skipped | order_id=%s | event=%s", orderID, event)
+		return
+	}
+
+	logger.Printf(
+		"INFO | medusa payload received | order_id=%s | display_id=%s | event=%s",
+		orderID,
+		displayID,
+		event,
+	)
+
+	switch event {
+	case "order.placed", "order.shipped", "order.canceled":
+		// known event, handled below
+	default:
+		logger.Printf("WARN | medusa | unknown event type | event=%s | order_id=%s", event, orderID)
+	}
+
+	// customer.phone is sourced from the shipping address on the Medusa side already
+	email, _ := customer["email"].(string)
+	phone, _ := customer["phone"].(string)
+	firstName, _ := customer["first_name"].(string)
+	lastName, _ := customer["last_name"].(string)
+
+	addressLine1, _ := shippingAddress["address_1"].(string)
+	addressLine2, _ := shippingAddress["address_2"].(string)
+	city, _ := shippingAddress["city"].(string)
+	state, _ := shippingAddress["province"].(string)
+	pincode, _ := shippingAddress["postal_code"].(string)
+
+	itemsRaw, _ := envelope["items"].([]any)
+	orderedItems := extractMedusaItems(itemsRaw)
+
+	// order.canceled is persisted for the record only — no Listmonk/Telegram/WhatsApp,
+	// same as WooCommerce cancellations today.
+	if event == "order.placed" || event == "order.shipped" {
+		if err := listMonkUpsert(map[string]any{
+			"email":                    email,
+			"name":                     firstName + " " + lastName,
+			"lists":                    []int{listMonkListIDOrders},
+			"preconfirm_subscriptions": true,
+			"status":                   "enabled",
+			"attribs": map[string]any{
+				"phone":               phone,
+				"address1":            addressLine1,
+				"address2":            addressLine2,
+				"city":                city,
+				"pincode":             pincode,
+				"state":               state,
+				"last_order_date":     nowISO(),
+				"last_order_id":       displayID,
+				"last_order_products": orderedItems,
+				"last_order_value":    order["total"],
+				"source":              "medusa",
+				"abc_stage":           3, // stage 3 and above is for customers in our ABC flow in n8n
+			},
+		}); err != nil {
+			logger.Printf("ERROR | ListMonk upsert failed for medusa order email | email=%s | err=%v", email, err)
+		}
+
+		// Telegram only on new order, mirroring the WooCommerce "processing" case
+		if event == "order.placed" {
+			telegramMessage := fmt.Sprintf(
+				"📦 <b>New Order</b>\n\n"+
+					"<b>Order ID:</b> %s\n"+
+					"<b>Name:</b> %s %s\n"+
+					"<b>Email:</b> %s\n"+
+					"<b>Phone:</b> %s\n"+
+					"<b>Amount:</b> ₹%v\n"+
+					"<b>Payment:</b> %s\n\n"+
+					"<b>Items:</b>\n%s",
+				displayID,
+				firstName,
+				lastName,
+				email,
+				phone,
+				order["total"],
+				strings.ToUpper(paymentMethod),
+				orderedItems,
+			)
+			sendTelegram(telegramMessage, telegramChatIDOrders)
+		}
+
+		// Send WhatsApp
+		switch event {
+		case "order.placed":
+			flag := flagPath("medusa_"+orderID, "processing")
+			if flagExists(flag) {
+				logger.Printf("INFO | whatsapp skipped | order_id=%s | state=processing | reason=duplicate", orderID)
+			} else {
+				// pcod orders show the outstanding COD balance rather than the full total,
+				// since the advance has already been paid online
+				amount := order["total"]
+				if paymentMethod == "pcod" {
+					if codBalance, ok := order["cod_balance"].(float64); ok {
+						amount = codBalance
+					}
+				}
+
+				vars := fmt.Sprintf(
+					"%s|%s|%s|Rs. %v/-|%s",
+					firstName,
+					displayID,
+					todayDDMMYYYY(),
+					amount,
+					strings.ToUpper(paymentMethod),
+				)
+
+				if err := sendWhatsApp(orderID, phone, msgOrderReceived, vars, "processing"); err != nil {
+					logger.Printf("ERROR | whatsapp failed | order_id=%s | state=processing | err=%v", orderID, err)
+				} else {
+					createFlag(flag)
+					logger.Printf("INFO | whatsapp sent | order_id=%s | state=processing", orderID)
+				}
+			}
+
+		case "order.shipped":
+			flag := flagPath("medusa_"+orderID, "fulfilled")
+			if flagExists(flag) {
+				logger.Printf("INFO | whatsapp skipped | order_id=%s | state=fulfilled | reason=duplicate", orderID)
+			} else {
+				tracking, _ := getMap(envelope, "tracking")
+				trackingNumber, _ := tracking["tracking_number"].(string)
+
+				var messageID, vars string
+				if trackingNumber == "" {
+					vars = fmt.Sprintf("%s|%s|%s", firstName, displayID, todayDDMMYYYY())
+					messageID = msgOrderShipped
+				} else {
+					vars = fmt.Sprintf("%s|%s|%s|%s", firstName, displayID, todayDDMMYYYY(), trackingNumber)
+					messageID = msgOrderShippedWithTracking
+				}
+
+				if err := sendWhatsApp(orderID, phone, messageID, vars, "fulfilled"); err != nil {
+					logger.Printf("ERROR | whatsapp failed | order_id=%s | state=fulfilled | err=%v", orderID, err)
+				} else {
+					createFlag(flag)
+					logger.Printf("INFO | whatsapp sent | order_id=%s | state=fulfilled", orderID)
+				}
+			}
+		}
+	}
+
+	storeJSON("medusa", fmt.Sprintf("%s_%s", orderID, strings.TrimPrefix(event, "order.")), envelope)
+	w.Write([]byte(`{"status":"ok"}`))
+}
+
 //
 // ------------------------------------------------------------
 // MAIN
@@ -1025,6 +1304,7 @@ func main() {
 
 	mux.HandleFunc("/abc", abcHandler)
 	mux.HandleFunc("/woocommerce", woocommerceHandler)
+	mux.HandleFunc("/medusa-order", medusaOrderHandler)
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		// just in case if I wish to use a load balancer

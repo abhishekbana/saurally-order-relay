@@ -10,6 +10,7 @@
 *.test
 *.out
 saurally-order-relay
+main
 
 # ----------------------------------------------------
 # Go tooling
