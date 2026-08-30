@@ -838,6 +838,149 @@ func abcHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// Shiprocket/fastrr (SRC) checkout abandoned cart handler — same behavior as
+// abcHandler (GoKwik), adapted to the fastrr payload shape: a single flat
+// cart object (no "carts" wrapper) and no is_abandoned flag, so every
+// webhook received here is treated as an abandoned-cart event.
+func abcSrcHandler(w http.ResponseWriter, r *http.Request) {
+
+	// Always respond OK to avoid retries
+	defer func() {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok"}`))
+	}()
+
+	// Accept JSON only
+	if !strings.Contains(r.Header.Get("Content-Type"), "application/json") {
+		logger.Printf("INFO | abc-src | non-json request ignored")
+		return
+	}
+
+	// ---- read raw body ----
+	rawBody, err := io.ReadAll(r.Body)
+	if err != nil {
+		logger.Printf("ERROR | abc-src | failed to read body | err=%v", err)
+		return
+	}
+
+	logger.Printf("DEBUG | abc-src raw payload | %s", string(rawBody))
+
+	// Restore body for decoding
+	r.Body = io.NopCloser(bytes.NewBuffer(rawBody))
+
+	var cart map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&cart); err != nil {
+		logger.Printf("ERROR | abc-src | invalid json | err=%v", err)
+		return
+	}
+
+	// ---- strict customer extraction ----
+	email, _ := cart["email"].(string)
+	phone, _ := cart["phone_number"].(string)
+	firstName, _ := cart["first_name"].(string)
+	lastName, _ := cart["last_name"].(string)
+
+	billingAddress, _ := getMap(cart, "billing_address")
+	city, _ := billingAddress["city"].(string)
+	state, _ := billingAddress["state"].(string)
+
+	if email == "" || phone == "" || firstName == "" {
+		logger.Printf(
+			"ERROR | abc-src | missing critical customer fields | email=%q phone=%q firstname=%q cart_id=%v",
+			email,
+			phone,
+			firstName,
+			cart["cart_id"],
+		)
+	}
+
+	// ---- cart fields ----
+	cartURL, _ := cart["checkout_url"].(string)
+	cartValue := cart["total_price"]
+	dropStage, _ := cart["latest_stage"].(string)
+
+	logger.Printf(
+		"INFO | abc-src | cart processed | email=%s | drop_stage=%s | cart_id=%v",
+		email,
+		dropStage,
+		cart["cart_id"],
+	)
+
+	cartItemsWithQty := extractCartItems(cart)
+
+	if err := listMonkUpsert(map[string]any{
+		"email":                    email,
+		"name":                     firstName + " " + lastName,
+		"lists":                    []int{listMonkListIDABC},
+		"preconfirm_subscriptions": true,
+		"status":                   "enabled",
+		"attribs": map[string]any{
+			"phone":      phone,
+			"cart_url":   cartURL,
+			"abc_stage":  0, // intial stage for all abandoned carts - ABC logic starts from stage 0 in n8n
+			"drop_stage": dropStage,
+			"cart_value": cartValue,
+			"cart_items": cartItemsWithQty,
+		},
+	}); err != nil {
+		logger.Printf("ERROR | ListMonk upsert failed for ABC-SRC email | email=%s | err=%v", email, err)
+	}
+
+	// ---- Telegram + WhatsApp ABC1 (every webhook here counts as abandoned) ----
+	telegramMessage := fmt.Sprintf(
+		"🛒 <b>Abandoned Cart (Shiprocket)</b>\n\n"+
+			"<b>Name:</b> %s %s\n"+
+			"<b>Email:</b> %s\n"+
+			"<b>Phone:</b> %s\n"+
+			"<b>City:</b> %s\n"+
+			"<b>State:</b> %s\n"+
+			"<b>Cart Value:</b> ₹%v\n"+
+			"<b>Stage:</b> %s\n\n"+
+			"<b>Items:</b>\n%s\n"+
+			"<a href=\"%s\">View Cart</a>",
+		firstName,
+		lastName,
+		email,
+		phone,
+		city,
+		state,
+		cartValue,
+		dropStage,
+		"• "+strings.Join(cartItemsWithQty, "\n• "),
+		cartURL,
+	)
+
+	logger.Printf(
+		"INFO | abc-src | sending telegram | email=%s | cart_id=%v",
+		email,
+		cart["cart_id"],
+	)
+
+	sendTelegram(telegramMessage, telegramChatIDABC)
+
+	// WhatsApp ABC1 notification
+	cartID := fmt.Sprintf("%v", cart["cart_id"])
+	vars := fmt.Sprintf("%s|%v", firstName, cartValue)
+	if err := sendWhatsApp(cartID, phone, msgABC1, vars, "abc1"); err != nil {
+		logger.Printf("ERROR | whatsapp abc1 failed | cart_id=%s | err=%v", cartID, err)
+	} else {
+		logger.Printf("INFO | whatsapp abc1 sent | cart_id=%s", cartID)
+	}
+
+	// ---- persist raw cart ----
+	if err := storeJSON(
+		"shiprocket",
+		fmt.Sprintf("%s_%s", email, time.Now().Format("150405")),
+		cart,
+	); err != nil {
+		logger.Printf(
+			"ERROR | abc-src | failed to store cart | email=%s | err=%v",
+			email,
+			err,
+		)
+	}
+}
+
 // Website order data handler
 func woocommerceHandler(w http.ResponseWriter, r *http.Request) {
 	ct := r.Header.Get("Content-Type")
@@ -1303,6 +1446,7 @@ func main() {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/abc", abcHandler)
+	mux.HandleFunc("/abc-src", abcSrcHandler)
 	mux.HandleFunc("/woocommerce", woocommerceHandler)
 	mux.HandleFunc("/medusa-order", medusaOrderHandler)
 

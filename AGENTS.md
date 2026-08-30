@@ -25,7 +25,9 @@ Medusa ───────POST /medusa-order──▶ medusaOrderHandler ─�
                                                          ├─▶ Telegram alert (same channel as WooCommerce)
                                                          └─▶ WhatsApp via Fast2SMS
 GoKwik ABC ───POST /abc───────────▶ abcHandler          ──▶ Listmonk upsert
-                                                         └─▶ Telegram alert (ABC channel, only if is_abandoned)
+                                                         └─▶ Telegram + WhatsApp ABC1 (only if is_abandoned)
+Shiprocket/fastrr POST /abc-src───▶ abcSrcHandler        ──▶ Listmonk upsert (same ABC list/channel/template as GoKwik)
+                                                         └─▶ Telegram + WhatsApp ABC1 (always — no is_abandoned equivalent)
 ```
 
 Both handlers always persist the raw inbound payload to disk before/after
@@ -40,6 +42,7 @@ fail the HTTP response.
 | `POST /woocommerce` | WooCommerce | Order lifecycle: `processing` → notify, `completed`/`shipped` → fulfilled WhatsApp |
 | `POST /medusa-order` | Medusa    | Order lifecycle: `order.placed` → notify, `order.shipped` → fulfilled WhatsApp, `order.canceled` → stored only. Gated by `MEDUSA_ORDER_ENABLED` (returns 503 while off — still being tested as of 2026-08-29) |
 | `POST /abc`         | GoKwik      | Abandoned cart capture; always returns 200 to stop GoKwik retries |
+| `POST /abc-src`     | Shiprocket/fastrr | Abandoned cart capture (checkout, not order); always returns 200 |
 | `GET /health`       | internal    | For a load balancer, currently unused in prod                |
 | `* /`               | anything else | 404 + logged (blocks bot scans of the root path)          |
 
@@ -47,8 +50,9 @@ fail the HTTP response.
 
 - **Fast2SMS (WhatsApp)** — `sendWhatsApp()`. Template-based messages keyed
   by `MESSAGE_ID_ORDER_RECEIVED` / `MESSAGE_ID_ORDER_SHIPPED` /
-  `MESSAGE_ID_ORDER_SHIPPED_WITH_TRACKING`. Response bodies are stored under
-  `storage/whatsapp/`.
+  `MESSAGE_ID_ORDER_SHIPPED_WITH_TRACKING` / `MESSAGE_ID_ABC1` (abandoned-cart
+  nudge, sent by both `abcHandler` and `abcSrcHandler`). Response bodies are
+  stored under `storage/whatsapp/`.
 - **Telegram** — `sendTelegram()`. Fire-and-forget (runs in a goroutine),
   HTML-formatted messages, two separate chat IDs for order vs. abandoned-cart
   alerts. No-ops silently if `TELEGRAM_ENABLED` isn't `"true"`.
@@ -73,9 +77,16 @@ Every state transition is gated by a marker file so re-delivered webhooks
   WhatsApp-send dedup, `storage/flags/<orderID>_<state>`, so a Listmonk/
   Telegram retry doesn't double-send a WhatsApp message.
 
-Raw payloads land in `storage/gokwik/` and `storage/woocommerce/`; WhatsApp
-API responses in `storage/whatsapp/`. Nothing is kept in memory — the process
-can be killed and restarted at any point without losing dedup state.
+Raw payloads land in `storage/gokwik/`, `storage/shiprocket/`,
+`storage/woocommerce/` and `storage/medusa/`; WhatsApp API responses in
+`storage/whatsapp/`. Nothing is kept in memory — the process can be killed
+and restarted at any point without losing dedup state.
+
+Note: neither `abcHandler` nor `abcSrcHandler` actually call
+`isDuplicateEvent()` — abandoned-cart webhooks are processed every time they
+arrive (no dedup), unlike the order handlers. This is intentional/existing
+behavior, not an oversight — keep it that way unless asked to add dedup
+there.
 
 ## Configuration
 
@@ -109,9 +120,18 @@ var listing.
 
 ## Things to know before making changes
 
-- **No auth on `/woocommerce` or `/abc` today.** Both trust whatever hits
-  them. If you add signature verification there, it's a deliberate new
-  feature, not a bug fix.
+- **No auth on `/woocommerce`, `/abc`, or `/abc-src` today.** All trust
+  whatever hits them. If you add signature verification there, it's a
+  deliberate new feature, not a bug fix.
+- **`/abc-src` (Shiprocket/fastrr) has no `is_abandoned` equivalent** in its
+  payload, unlike GoKwik's `/abc`. Every request is currently treated as an
+  abandoned-cart event and always triggers Listmonk + Telegram + WhatsApp
+  ABC1 — this assumes fastrr only calls this endpoint for incomplete
+  checkouts. If that assumption turns out to be wrong (e.g. fastrr also
+  fires it for completed payments), this will need a gate on `payment_status`
+  or `latest_stage` — check with the user before adding one speculatively.
+  `abcSrcHandler` reuses GoKwik's `listMonkListIDABC`, `telegramChatIDABC`,
+  and `msgABC1` — same downstream destinations, not source-segmented.
 - **`/medusa-order` is the one exception — signature verification is
   required and live.** Every request must carry
   `X-Medusa-Signature: sha256=<hex hmac-sha256>`, computed over the raw

@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(git check-ignore *)",
-      "Bash(python3 -c ' *)"
+      "Bash(python3 -c ' *)",
+      "Bash(git pull *)",
+      "Bash(git stash *)"
     ]
   }
 }

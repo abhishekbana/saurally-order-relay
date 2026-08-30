@@ -11,6 +11,7 @@ Webhook relay service written in Go. Receives commerce events from WooCommerce a
 | /woocommerce  | POST   | WooCommerce | Order lifecycle processing    |
 | /medusa-order | POST   | Medusa      | Order lifecycle processing (disabled until `MEDUSA_ORDER_ENABLED=true`) |
 | /abc          | POST   | GoKwik      | Abandoned cart ingestion      |
+| /abc-src      | POST   | Shiprocket/fastrr | Abandoned cart ingestion (checkout) |
 | /health       | GET    | Internal    | Health check                  |
 | /(root)       | ANY    | Bots        | Blocked and logged            |
 
@@ -78,6 +79,36 @@ Per cart:
 
 ---
 
+## Shiprocket/fastrr Abandoned Cart Logic (`/abc-src`)
+
+Same behavior as GoKwik's `/abc`, adapted to the fastrr checkout payload shape:
+a single flat cart object (not wrapped in a `carts` array), with customer
+fields (`email`, `phone_number`, `first_name`, `last_name`) at the top level
+instead of nested under `customer`.
+
+**No `is_abandoned` flag exists in this payload** — every webhook received on
+this endpoint is treated as an abandoned-cart event and always triggers the
+Listmonk upsert + Telegram alert + WhatsApp ABC1 nudge (this assumes fastrr
+only calls this endpoint for incomplete/dropped checkouts; a separate order
+webhook is expected to handle completed orders).
+
+Field mapping vs. GoKwik:
+
+| GoKwik (`/abc`)      | fastrr (`/abc-src`)         |
+|-----------------------|-------------------------------|
+| `cart.customer.email` | `email`                       |
+| `cart.customer.phone` | `phone_number`                |
+| `cart.customer.firstname`/`lastname` | `first_name`/`last_name` |
+| `cart.address.city`/`state` | `billing_address.city`/`state` |
+| `cart.abc_url`        | `checkout_url`                |
+| `cart.total_price`    | `total_price`                 |
+| `cart.drop_stage`     | `latest_stage`                |
+| `cart.items[].title`/`quantity` | `items[].title`/`quantity` (same shape) |
+
+Raw payloads stored under `storage/shiprocket/`.
+
+---
+
 ## Listmonk Integration
 
 ### ABC Subscriber Fields
@@ -123,6 +154,7 @@ LISTMONK_LIST_ID_ORDERS=2
 
 # WhatsApp (Fast2SMS)
 FAST2SMS_WHATSAPP_URL=https://www.fast2sms.com/dev/whatsapp
+MESSAGE_ID_ABC1=xxxxx
 
 # Medusa (order webhook)
 MEDUSA_ORDER_ENABLED=false
@@ -139,6 +171,7 @@ TZ=Asia/Kolkata
 ```
 storage/
 ├── gokwik/       Raw GoKwik payloads
+├── shiprocket/   Raw Shiprocket/fastrr checkout payloads
 ├── woocommerce/  Raw WooCommerce payloads
 ├── medusa/       Raw Medusa order payloads
 ├── whatsapp/     WhatsApp API responses
