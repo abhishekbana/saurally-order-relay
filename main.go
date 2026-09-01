@@ -1322,7 +1322,7 @@ func medusaOrderHandler(w http.ResponseWriter, r *http.Request) {
 		// Telegram only on new order, mirroring the WooCommerce "processing" case
 		if event == "order.placed" {
 			telegramMessage := fmt.Sprintf(
-				"📦 <b>New Order</b>\n\n"+
+				"📦 <b>New Order</b> <code>[medusa-order]</code>\n\n"+
 					"<b>Order ID:</b> %s\n"+
 					"<b>Name:</b> %s %s\n"+
 					"<b>Email:</b> %s\n"+
