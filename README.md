@@ -64,6 +64,9 @@ Notes:
   advance was already paid online.
 - Tracking comes directly from the `tracking` object in the payload — no
   parsing required (unlike WooCommerce's `meta_data` extraction).
+- Requests where `customer.email` is in `IGNORED_CUSTOMER_EMAILS` are
+  skipped entirely before dedup/storage — used to keep test traffic out of
+  real Listmonk/Telegram/WhatsApp.
 
 ---
 
@@ -106,6 +109,10 @@ Field mapping vs. GoKwik:
 | `cart.items[].title`/`quantity` | `items[].title`/`quantity` (same shape) |
 
 Raw payloads stored under `storage/shiprocket/`.
+
+Requests where `email` is in `IGNORED_CUSTOMER_EMAILS` are skipped entirely
+(no Listmonk/Telegram/WhatsApp, no storage) — same filter used on
+`/medusa-order`, for keeping test traffic out of real channels.
 
 ---
 
@@ -159,6 +166,9 @@ MESSAGE_ID_ABC1=xxxxx
 # Medusa (order webhook)
 MEDUSA_ORDER_ENABLED=false
 ORDER_RELAY_SECRET=xxxxxxxx
+
+# Test email exclusion (/medusa-order and /abc-src)
+IGNORED_CUSTOMER_EMAILS=
 
 # Timezone
 TZ=Asia/Kolkata

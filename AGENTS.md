@@ -132,6 +132,15 @@ var listing.
   or `latest_stage` — check with the user before adding one speculatively.
   `abcSrcHandler` reuses GoKwik's `listMonkListIDABC`, `telegramChatIDABC`,
   and `msgABC1` — same downstream destinations, not source-segmented.
+- **`IGNORED_CUSTOMER_EMAILS`** (comma-separated, case-insensitive, parsed by
+  `parseEmailSet()`) — emails to silently skip on `/medusa-order` and
+  `/abc-src` only (not `/woocommerce` or GoKwik's `/abc`). Checked
+  immediately after the customer email is extracted, before dedup/logging/
+  storage — a matching request does nothing but log one INFO line and
+  respond `200`. Exists to keep the developer's own test traffic on the
+  Shiprocket/fastrr checkout flow (Medusa orders + `/abc-src` abandoned
+  carts) out of real Listmonk/Telegram/WhatsApp, since that flow has been
+  tested repeatedly against prod with a real personal email.
 - **`/medusa-order` is the one exception — signature verification is
   required and live.** Every request must carry
   `X-Medusa-Signature: sha256=<hex hmac-sha256>`, computed over the raw

@@ -67,6 +67,11 @@ var (
 
 	// Shared secret for verifying X-Medusa-Signature on /medusa-order.
 	orderRelaySecret = os.Getenv("ORDER_RELAY_SECRET")
+
+	// Customer emails to silently skip on /medusa-order and /abc-src (comma-separated,
+	// case-insensitive) — used to keep test traffic on the Shiprocket/fastrr checkout
+	// flow (Medusa orders + abandoned carts) out of real Listmonk/Telegram/WhatsApp.
+	ignoredCustomerEmails = parseEmailSet(os.Getenv("IGNORED_CUSTOMER_EMAILS"))
 )
 
 //
@@ -95,6 +100,17 @@ func getEnv(k, d string) string {
 func envInt(k string) int {
 	n, _ := strconv.Atoi(os.Getenv(k))
 	return n
+}
+
+func parseEmailSet(raw string) map[string]bool {
+	set := map[string]bool{}
+	for _, e := range strings.Split(raw, ",") {
+		e = strings.TrimSpace(strings.ToLower(e))
+		if e != "" {
+			set[e] = true
+		}
+	}
+	return set
 }
 
 func nowISO() string {
@@ -876,6 +892,12 @@ func abcSrcHandler(w http.ResponseWriter, r *http.Request) {
 
 	// ---- strict customer extraction ----
 	email, _ := cart["email"].(string)
+
+	if ignoredCustomerEmails[strings.ToLower(email)] {
+		logger.Printf("INFO | abc-src | ignored test customer email | email=%s", email)
+		return
+	}
+
 	phone, _ := cart["phone_number"].(string)
 	firstName, _ := cart["first_name"].(string)
 	lastName, _ := cart["last_name"].(string)
@@ -1248,6 +1270,16 @@ func medusaOrderHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// customer.phone is sourced from the shipping address on the Medusa side already
+	email, _ := customer["email"].(string)
+
+	if ignoredCustomerEmails[strings.ToLower(email)] {
+		logger.Printf("INFO | medusa | ignored test customer email | email=%s | event=%s", email, event)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ignored"}`))
+		return
+	}
+
 	// nullable in the spec — reads against a nil map are safe (zero value, no panic)
 	shippingAddress, _ := getMap(envelope, "shipping_address")
 
@@ -1277,8 +1309,6 @@ func medusaOrderHandler(w http.ResponseWriter, r *http.Request) {
 		logger.Printf("WARN | medusa | unknown event type | event=%s | order_id=%s", event, orderID)
 	}
 
-	// customer.phone is sourced from the shipping address on the Medusa side already
-	email, _ := customer["email"].(string)
 	phone, _ := customer["phone"].(string)
 	firstName, _ := customer["first_name"].(string)
 	lastName, _ := customer["last_name"].(string)
