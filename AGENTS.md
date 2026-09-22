@@ -130,8 +130,23 @@ var listing.
   checkouts. If that assumption turns out to be wrong (e.g. fastrr also
   fires it for completed payments), this will need a gate on `payment_status`
   or `latest_stage` — check with the user before adding one speculatively.
-  `abcSrcHandler` reuses GoKwik's `listMonkListIDABC`, `telegramChatIDABC`,
-  and `msgABC1` — same downstream destinations, not source-segmented.
+  `abcSrcHandler` reuses GoKwik's `telegramChatIDABC` and `msgABC1` — same
+  Telegram/WhatsApp destinations, not source-segmented. The Listmonk list
+  *is* conditionally segmented, though — see `isMobilePlaceholderEmail()`
+  below.
+- **`isMobilePlaceholderEmail()`** (`main.go`) detects fastrr's placeholder
+  email for mobile-only checkouts (no real email given): `<mobile>@fastrr.com`,
+  matched by suffix, case-insensitive. Only checked in `abcSrcHandler` and
+  `medusaOrderHandler` (fastrr is the only source that produces these) —
+  when it matches, the Listmonk upsert uses `LISTMONK_LIST_ID_MOBILE_ABC` /
+  `LISTMONK_LIST_ID_MOBILE_ORDERS` instead of the normal
+  `LISTMONK_LIST_ID_ABC` / `LISTMONK_LIST_ID_ORDERS`. Processing is otherwise
+  unaffected — Telegram, WhatsApp, storage, dedup all proceed as usual
+  regardless of which list the subscriber lands in. One exception: the
+  `/medusa-order` admin Telegram "New Order" message gets an extra line
+  ("No email on this order — send tracking link manually via WhatsApp")
+  appended when `isMobileOnly` is true — admin-facing only, doesn't touch
+  the customer-facing WhatsApp message itself.
 - **`IGNORED_CUSTOMER_EMAILS`** (comma-separated, case-insensitive, parsed by
   `parseEmailSet()`) — emails to silently skip on `/medusa-order` and
   `/abc-src` only (not `/woocommerce` or GoKwik's `/abc`). Checked

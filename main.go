@@ -62,6 +62,13 @@ var (
 	listMonkListIDABC    = envInt("LISTMONK_LIST_ID_ABC")
 	listMonkListIDOrders = envInt("LISTMONK_LIST_ID_ORDERS")
 
+	// Separate lists for fastrr's "mobile-only checkout" placeholder emails
+	// (<mobile>@fastrr.com, used when the customer didn't provide a real email).
+	// Only relevant on /abc-src and /medusa-order — fastrr is the only source
+	// that generates these.
+	listMonkListIDMobileABC    = envInt("LISTMONK_LIST_ID_MOBILE_ABC")
+	listMonkListIDMobileOrders = envInt("LISTMONK_LIST_ID_MOBILE_ORDERS")
+
 	// Off by default while the Medusa integration is still being tested.
 	medusaOrderEnabled = os.Getenv("MEDUSA_ORDER_ENABLED") == "true"
 
@@ -111,6 +118,11 @@ func parseEmailSet(raw string) map[string]bool {
 		}
 	}
 	return set
+}
+
+// fastrr's placeholder for a mobile-only checkout, no real email provided.
+func isMobilePlaceholderEmail(email string) bool {
+	return strings.HasSuffix(strings.ToLower(email), "@fastrr.com")
 }
 
 func nowISO() string {
@@ -930,10 +942,15 @@ func abcSrcHandler(w http.ResponseWriter, r *http.Request) {
 
 	cartItemsWithQty := extractCartItems(cart)
 
+	abcListID := listMonkListIDABC
+	if isMobilePlaceholderEmail(email) {
+		abcListID = listMonkListIDMobileABC
+	}
+
 	if err := listMonkUpsert(map[string]any{
 		"email":                    email,
 		"name":                     firstName + " " + lastName,
-		"lists":                    []int{listMonkListIDABC},
+		"lists":                    []int{abcListID},
 		"preconfirm_subscriptions": true,
 		"status":                   "enabled",
 		"attribs": map[string]any{
@@ -1325,10 +1342,17 @@ func medusaOrderHandler(w http.ResponseWriter, r *http.Request) {
 	// order.canceled is persisted for the record only — no Listmonk/Telegram/WhatsApp,
 	// same as WooCommerce cancellations today.
 	if event == "order.placed" || event == "order.shipped" {
+		isMobileOnly := isMobilePlaceholderEmail(email)
+
+		ordersListID := listMonkListIDOrders
+		if isMobileOnly {
+			ordersListID = listMonkListIDMobileOrders
+		}
+
 		if err := listMonkUpsert(map[string]any{
 			"email":                    email,
 			"name":                     firstName + " " + lastName,
-			"lists":                    []int{listMonkListIDOrders},
+			"lists":                    []int{ordersListID},
 			"preconfirm_subscriptions": true,
 			"status":                   "enabled",
 			"attribs": map[string]any{
@@ -1351,6 +1375,11 @@ func medusaOrderHandler(w http.ResponseWriter, r *http.Request) {
 
 		// Telegram only on new order, mirroring the WooCommerce "processing" case
 		if event == "order.placed" {
+			noEmailNote := ""
+			if isMobileOnly {
+				noEmailNote = "\n\n⚠️ <i>No email on this order — send tracking link manually via WhatsApp.</i>"
+			}
+
 			telegramMessage := fmt.Sprintf(
 				"📦 <b>New Order</b> <code>[medusa-order]</code>\n\n"+
 					"<b>Order ID:</b> %s\n"+
@@ -1359,7 +1388,7 @@ func medusaOrderHandler(w http.ResponseWriter, r *http.Request) {
 					"<b>Phone:</b> %s\n"+
 					"<b>Amount:</b> ₹%v\n"+
 					"<b>Payment:</b> %s\n\n"+
-					"<b>Items:</b>\n%s",
+					"<b>Items:</b>\n%s%s",
 				displayID,
 				firstName,
 				lastName,
@@ -1368,6 +1397,7 @@ func medusaOrderHandler(w http.ResponseWriter, r *http.Request) {
 				order["total"],
 				strings.ToUpper(paymentMethod),
 				orderedItems,
+				noEmailNote,
 			)
 			sendTelegram(telegramMessage, telegramChatIDOrders)
 		}

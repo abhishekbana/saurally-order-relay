@@ -67,6 +67,10 @@ Notes:
 - Requests where `customer.email` is in `IGNORED_CUSTOMER_EMAILS` are
   skipped entirely before dedup/storage — used to keep test traffic out of
   real Listmonk/Telegram/WhatsApp.
+- fastrr's mobile-only checkout placeholder emails (`<mobile>@fastrr.com`)
+  are upserted into `LISTMONK_LIST_ID_MOBILE_ORDERS` instead of
+  `LISTMONK_LIST_ID_ORDERS` — everything else about the order is processed
+  normally.
 
 ---
 
@@ -114,6 +118,12 @@ Requests where `email` is in `IGNORED_CUSTOMER_EMAILS` are skipped entirely
 (no Listmonk/Telegram/WhatsApp, no storage) — same filter used on
 `/medusa-order`, for keeping test traffic out of real channels.
 
+fastrr lets customers check out with no email at all, in which case it
+fills in a placeholder of the form `<mobile>@fastrr.com`. Any email matching
+that pattern is upserted into `LISTMONK_LIST_ID_MOBILE_ABC` instead of
+`LISTMONK_LIST_ID_ABC` — everything else (Telegram, WhatsApp ABC1, storage)
+is unaffected.
+
 ---
 
 ## Listmonk Integration
@@ -158,6 +168,8 @@ LISTMONK_USER=admin
 LISTMONK_PASS=secret
 LISTMONK_LIST_ID_ABC=1
 LISTMONK_LIST_ID_ORDERS=2
+LISTMONK_LIST_ID_MOBILE_ABC=11
+LISTMONK_LIST_ID_MOBILE_ORDERS=12
 
 # WhatsApp (Fast2SMS)
 FAST2SMS_WHATSAPP_URL=https://www.fast2sms.com/dev/whatsapp
