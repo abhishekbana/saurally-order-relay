@@ -312,6 +312,149 @@ func sendTelegram(message string, chatID string) {
 // ------------------------------------------------------------
 // LISTMONK
 // ------------------------------------------------------------
+// listMonkFindSubscriber searches for a subscriber by email. Returns
+// (nil, false, nil) when no matching subscriber exists — not an error.
+func listMonkFindSubscriber(client *http.Client, email string) (map[string]any, bool, error) {
+	searchURL := fmt.Sprintf(
+		"%s/api/subscribers?query=email='%s'",
+		listMonkURL,
+		email,
+	)
+
+	logger.Printf("INFO | listmonk search | email=%s | url=%s", email, searchURL)
+
+	req, _ := http.NewRequest("GET", searchURL, nil)
+	req.SetBasicAuth(listMonkUser, listMonkPass)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, false, err
+	}
+	defer resp.Body.Close()
+
+	searchBody, _ := io.ReadAll(resp.Body)
+
+	logger.Printf(
+		"DEBUG | listmonk search response | email=%s | status=%d | body=%s",
+		email,
+		resp.StatusCode,
+		string(searchBody),
+	)
+
+	if resp.StatusCode != 200 {
+		return nil, false, fmt.Errorf("search failed status=%d", resp.StatusCode)
+	}
+
+	var searchResult map[string]any
+	if err := json.Unmarshal(searchBody, &searchResult); err != nil {
+		return nil, false, err
+	}
+
+	dataObj, ok := searchResult["data"].(map[string]any)
+	if !ok {
+		return nil, false, fmt.Errorf("invalid search response structure")
+	}
+
+	results, _ := dataObj["results"].([]any)
+	if len(results) == 0 {
+		return nil, false, nil
+	}
+
+	existing, ok := results[0].(map[string]any)
+	if !ok {
+		return nil, false, fmt.Errorf("listmonk: unexpected subscriber format")
+	}
+
+	return existing, true, nil
+}
+
+// listMonkRemoveFromList removes a single list ID from a subscriber's list
+// membership — used to move a corrected order email off the mobile-only/wrong
+// list once the real email is upserted onto the regular one. Only touches
+// list membership; name/attribs/status are left untouched. No-op (not an
+// error) if the subscriber doesn't exist or isn't in that list.
+func listMonkRemoveFromList(email string, listID int) error {
+	if !listMonkEnabled {
+		logger.Printf("INFO | listmonk disabled. Skipping list removal")
+		return nil
+	}
+
+	if email == "" {
+		return fmt.Errorf("email missing for listmonk list removal")
+	}
+
+	if listMonkURL == "" || listMonkUser == "" || listMonkPass == "" {
+		return fmt.Errorf("listmonk config missing")
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	existing, found, err := listMonkFindSubscriber(client, email)
+	if err != nil {
+		return err
+	}
+
+	if !found {
+		logger.Printf("INFO | listmonk | no subscriber found for list removal | email=%s | list_id=%d", email, listID)
+		return nil
+	}
+
+	idFloat, ok := existing["id"].(float64)
+	if !ok {
+		return fmt.Errorf("listmonk: subscriber id missing")
+	}
+	id := int(idFloat)
+
+	oldListsRaw, _ := existing["lists"].([]any)
+
+	finalLists := []int{}
+	removed := false
+	for _, l := range oldListsRaw {
+		item, ok := l.(map[string]any)
+		if !ok {
+			continue
+		}
+		lid, ok := item["id"].(float64)
+		if !ok {
+			continue
+		}
+		if int(lid) == listID {
+			removed = true
+			continue
+		}
+		finalLists = append(finalLists, int(lid))
+	}
+
+	if !removed {
+		logger.Printf("INFO | listmonk | subscriber not in list, nothing to remove | email=%s | list_id=%d", email, listID)
+		return nil
+	}
+
+	updatePayload := map[string]any{
+		"email":   email,
+		"name":    existing["name"],
+		"status":  "enabled",
+		"lists":   finalLists,
+		"attribs": existing["attribs"],
+	}
+
+	updateURL := fmt.Sprintf("%s/api/subscribers/%d", listMonkURL, id)
+	body, _ := json.Marshal(updatePayload)
+
+	req, _ := http.NewRequest("PUT", updateURL, bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetBasicAuth(listMonkUser, listMonkPass)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	logger.Printf("INFO | listmonk list removal success | email=%s | list_id=%d | id=%d", email, listID, id)
+	return nil
+}
+
 func listMonkUpsert(newPayload map[string]any) error {
 	if !listMonkEnabled {
 		logger.Printf("INFO | listmonk disabled. Skipping upsert")
@@ -329,55 +472,15 @@ func listMonkUpsert(newPayload map[string]any) error {
 
 	client := &http.Client{Timeout: 10 * time.Second}
 
-	// --------------------------------------------------
-	// SEARCH
-	// --------------------------------------------------
-	searchURL := fmt.Sprintf(
-		"%s/api/subscribers?query=email='%s'",
-		listMonkURL,
-		email,
-	)
-
-	logger.Printf("INFO | listmonk search | email=%s | url=%s", email, searchURL)
-
-	req, _ := http.NewRequest("GET", searchURL, nil)
-	req.SetBasicAuth(listMonkUser, listMonkPass)
-
-	resp, err := client.Do(req)
+	existing, found, err := listMonkFindSubscriber(client, email)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
-
-	searchBody, _ := io.ReadAll(resp.Body)
-
-	logger.Printf(
-		"DEBUG | listmonk search response | email=%s | status=%d | body=%s",
-		email,
-		resp.StatusCode,
-		string(searchBody),
-	)
-
-	if resp.StatusCode != 200 {
-		return fmt.Errorf("search failed status=%d", resp.StatusCode)
-	}
-
-	var searchResult map[string]any
-	if err := json.Unmarshal(searchBody, &searchResult); err != nil {
-		return err
-	}
-
-	dataObj, ok := searchResult["data"].(map[string]any)
-	if !ok {
-		return fmt.Errorf("invalid search response structure")
-	}
-
-	results, _ := dataObj["results"].([]any)
 
 	// ==================================================
 	// CREATE
 	// ==================================================
-	if len(results) == 0 {
+	if !found {
 		logger.Printf("INFO | listmonk create | email=%s", email)
 
 		createURL := fmt.Sprintf("%s/api/subscribers", listMonkURL)
@@ -400,10 +503,6 @@ func listMonkUpsert(newPayload map[string]any) error {
 	// ==================================================
 	// UPDATE
 	// ==================================================
-	existing, ok := results[0].(map[string]any)
-	if !ok {
-		return fmt.Errorf("listmonk: unexpected subscriber format")
-	}
 	idFloat, ok := existing["id"].(float64)
 	if !ok {
 		return fmt.Errorf("listmonk: subscriber id missing")
@@ -466,11 +565,11 @@ func listMonkUpsert(newPayload map[string]any) error {
 	updateURL := fmt.Sprintf("%s/api/subscribers/%d", listMonkURL, id)
 	body, _ := json.Marshal(updatePayload)
 
-	req, _ = http.NewRequest("PUT", updateURL, bytes.NewBuffer(body))
+	req, _ := http.NewRequest("PUT", updateURL, bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.SetBasicAuth(listMonkUser, listMonkPass)
 
-	resp, err = client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -1290,6 +1389,16 @@ func medusaOrderHandler(w http.ResponseWriter, r *http.Request) {
 	// customer.phone is sourced from the shipping address on the Medusa side already
 	email, _ := customer["email"].(string)
 
+	var oldEmail string
+	if event == "order.email_corrected" {
+		oldEmail, _ = envelope["old_email"].(string)
+		if oldEmail == "" {
+			logger.Printf("ERROR | medusa payload invalid | event=%s | reason=old_email_missing", event)
+			http.Error(w, "invalid payload: old_email missing", http.StatusBadRequest)
+			return
+		}
+	}
+
 	if ignoredCustomerEmails[strings.ToLower(email)] {
 		logger.Printf("INFO | medusa | ignored test customer email | email=%s | event=%s", email, event)
 		w.WriteHeader(http.StatusOK)
@@ -1320,7 +1429,7 @@ func medusaOrderHandler(w http.ResponseWriter, r *http.Request) {
 	)
 
 	switch event {
-	case "order.placed", "order.shipped", "order.canceled":
+	case "order.placed", "order.shipped", "order.canceled", "order.email_corrected":
 		// known event, handled below
 	default:
 		logger.Printf("WARN | medusa | unknown event type | event=%s | order_id=%s", event, orderID)
@@ -1460,6 +1569,63 @@ func medusaOrderHandler(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+	} else if event == "order.email_corrected" {
+		// Admin corrected a wrong/placeholder email on an existing order (order ID
+		// unchanged). Move the subscriber off whichever list the old email was on
+		// and upsert the real email onto the regular orders list with full data —
+		// no WhatsApp resend, since phone was already correct and those messages
+		// already went out. old_email presence was already validated above.
+		removeListID := listMonkListIDOrders
+		sourceListLabel := "Website Orders"
+		if isMobilePlaceholderEmail(oldEmail) {
+			removeListID = listMonkListIDMobileOrders
+			sourceListLabel = "Mobile Only Orders"
+		}
+
+		if oldEmail != email {
+			if err := listMonkRemoveFromList(oldEmail, removeListID); err != nil {
+				logger.Printf("ERROR | listmonk list removal failed | old_email=%s | list_id=%d | err=%v", oldEmail, removeListID, err)
+			}
+		} else {
+			logger.Printf("WARN | medusa | old_email same as corrected email, nothing to remove | order_id=%s", orderID)
+		}
+
+		if err := listMonkUpsert(map[string]any{
+			"email":                    email,
+			"name":                     firstName + " " + lastName,
+			"lists":                    []int{listMonkListIDOrders},
+			"preconfirm_subscriptions": true,
+			"status":                   "enabled",
+			"attribs": map[string]any{
+				"phone":               phone,
+				"address1":            addressLine1,
+				"address2":            addressLine2,
+				"city":                city,
+				"pincode":             pincode,
+				"state":               state,
+				"last_order_date":     nowISO(),
+				"last_order_id":       displayID,
+				"last_order_products": orderedItems,
+				"last_order_value":    order["total"],
+				"source":              "medusa",
+				"abc_stage":           3, // stage 3 and above is for customers in our ABC flow in n8n
+			},
+		}); err != nil {
+			logger.Printf("ERROR | ListMonk upsert failed for corrected medusa order email | email=%s | err=%v", email, err)
+		}
+
+		telegramMessage := fmt.Sprintf(
+			"✏️ <b>Order Email Corrected</b> <code>[medusa-order]</code>\n\n"+
+				"<b>Order ID:</b> %s\n"+
+				"<b>Old Email:</b> %s\n"+
+				"<b>New Email:</b> %s\n\n"+
+				"Moved from %s to Website Orders list.",
+			displayID,
+			oldEmail,
+			email,
+			sourceListLabel,
+		)
+		sendTelegram(telegramMessage, telegramChatIDOrders)
 	}
 
 	storeJSON("medusa", fmt.Sprintf("%s_%s", orderID, strings.TrimPrefix(event, "order.")), envelope)

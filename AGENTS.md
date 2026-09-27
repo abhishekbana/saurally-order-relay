@@ -40,7 +40,7 @@ fail the HTTP response.
 | Path           | Source      | Notes                                                        |
 |----------------|-------------|---------------------------------------------------------------|
 | `POST /woocommerce` | WooCommerce | Order lifecycle: `processing` → notify, `completed`/`shipped` → fulfilled WhatsApp |
-| `POST /medusa-order` | Medusa    | Order lifecycle: `order.placed` → notify, `order.shipped` → fulfilled WhatsApp, `order.canceled` → stored only. Gated by `MEDUSA_ORDER_ENABLED` (returns 503 while off — still being tested as of 2026-08-29) |
+| `POST /medusa-order` | Medusa    | Order lifecycle: `order.placed` → notify, `order.shipped` → fulfilled WhatsApp, `order.canceled` → stored only, `order.email_corrected` → move Listmonk list + admin Telegram note. Gated by `MEDUSA_ORDER_ENABLED` (returns 503 while off — still being tested as of 2026-08-29) |
 | `POST /abc`         | GoKwik      | Abandoned cart capture; always returns 200 to stop GoKwik retries |
 | `POST /abc-src`     | Shiprocket/fastrr | Abandoned cart capture (checkout, not order); always returns 200 |
 | `GET /health`       | internal    | For a load balancer, currently unused in prod                |
@@ -147,6 +147,22 @@ var listing.
   ("No email on this order — send tracking link manually via WhatsApp")
   appended when `isMobileOnly` is true — admin-facing only, doesn't touch
   the customer-facing WhatsApp message itself.
+- **`order.email_corrected`** (`medusaOrderHandler`) — Medusa's admin-side
+  correction flow for an order that was placed with a wrong/placeholder
+  email. Same envelope shape as `order.placed`, plus a required top-level
+  `old_email` field (validated before the dedup marker is written, like
+  `order`/`customer` missing — so a malformed first attempt doesn't
+  permanently block a corrected retry via `isDuplicateEvent`). Handling:
+  `listMonkRemoveFromList(old_email, ...)` — a new function, factored out
+  of `listMonkUpsert` via the shared `listMonkFindSubscriber()` helper —
+  drops list membership only (never deletes the subscriber record) from
+  `LISTMONK_LIST_ID_MOBILE_ORDERS` if `old_email` matches the fastrr
+  placeholder pattern, else `LISTMONK_LIST_ID_ORDERS` (so this also fixes a
+  plain typo'd real email, not just the placeholder case, per explicit
+  request). Then `listMonkUpsert()`s the corrected `customer.email` onto
+  `LISTMONK_LIST_ID_ORDERS` with full attribs (same construction as
+  `order.placed`), and posts a quiet Telegram note to `TELEGRAM_CHAT_ID_ORDERS`.
+  No WhatsApp — phone didn't change, those messages already went out.
 - **`IGNORED_CUSTOMER_EMAILS`** (comma-separated, case-insensitive, parsed by
   `parseEmailSet()`) — emails to silently skip on `/medusa-order` and
   `/abc-src` only (not `/woocommerce` or GoKwik's `/abc`). Checked

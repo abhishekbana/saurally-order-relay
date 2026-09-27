@@ -54,6 +54,7 @@ Listmonk list (`LISTMONK_LIST_ID_ORDERS`), Telegram channel
 | order.shipped (tracking)   | ✅              | ✅ Shipped + tracking     | ❌          | Yes   |
 | order.shipped (no tracking)| ✅              | ✅ Shipped                | ❌          | Yes   |
 | order.canceled             | ❌              | ❌                        | ❌          | Yes (stored only) |
+| order.email_corrected      | ✅ (new email)  | ❌                        | ✅ note     | Yes   |
 | duplicate webhook          | ❌ Skipped      | ❌ Skipped                | ❌ Skipped  | Yes   |
 
 Notes:
@@ -71,6 +72,16 @@ Notes:
   are upserted into `LISTMONK_LIST_ID_MOBILE_ORDERS` instead of
   `LISTMONK_LIST_ID_ORDERS` — everything else about the order is processed
   normally.
+- **`order.email_corrected`** — for when an admin edits an order in Medusa to
+  add/fix the customer's email after the fact (order ID unchanged). Payload
+  is the same shape as `order.placed`, plus a top-level `old_email` field.
+  The relay removes `old_email` from whichever Listmonk list it was on
+  (`LISTMONK_LIST_ID_MOBILE_ORDERS` if it matches the fastrr placeholder
+  pattern, otherwise `LISTMONK_LIST_ID_ORDERS` — covers a plain typo too,
+  not just the placeholder case), upserts the corrected email onto
+  `LISTMONK_LIST_ID_ORDERS` with full order attribs, and posts a quiet
+  Telegram admin note. No WhatsApp is sent — the phone number was already
+  correct and those messages already went out.
 
 ---
 
