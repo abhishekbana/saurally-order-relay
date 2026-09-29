@@ -1413,6 +1413,7 @@ func medusaOrderHandler(w http.ResponseWriter, r *http.Request) {
 	displayIDFloat, _ := order["display_id"].(float64)
 	displayID := fmt.Sprintf("%v", int(displayIDFloat))
 	paymentMethod, _ := order["payment_method"].(string)
+	checkoutSource, _ := order["checkout_source"].(string)
 
 	eventKey := fmt.Sprintf("medusa_order_%s_%s", orderID, event)
 
@@ -1484,9 +1485,23 @@ func medusaOrderHandler(w http.ResponseWriter, r *http.Request) {
 
 		// Telegram only on new order, mirroring the WooCommerce "processing" case
 		if event == "order.placed" {
-			noEmailNote := ""
+			var adminNotes []string
 			if isMobileOnly {
-				noEmailNote = "\n\n⚠️ <i>No email on this order — send tracking link manually via WhatsApp.</i>"
+				adminNotes = append(adminNotes, "⚠️ <i>No email on this order — send tracking link manually via WhatsApp.</i>")
+			}
+			// checkout_source is the authority on gateway confirmation — payment_method
+			// alone (cod/prepaid/pcod) is present either way and never implies a gateway
+			// touched the order. "native_fallback" means no gateway confirmed payment at
+			// all, so treat it as full COD needing manual verification regardless of
+			// what payment_method says. "shiprocket" means Shiprocket's own gateway
+			// handled it — payment_method can be trusted as gateway-confirmed.
+			if checkoutSource == "native_fallback" {
+				adminNotes = append(adminNotes, fmt.Sprintf("🔴 <b>FULL COD ORDER #%s</b> — Manual verification required before shipping.", displayID))
+			}
+
+			notesBlock := ""
+			if len(adminNotes) > 0 {
+				notesBlock = "\n\n" + strings.Join(adminNotes, "\n")
 			}
 
 			telegramMessage := fmt.Sprintf(
@@ -1506,7 +1521,7 @@ func medusaOrderHandler(w http.ResponseWriter, r *http.Request) {
 				order["total"],
 				strings.ToUpper(paymentMethod),
 				orderedItems,
-				noEmailNote,
+				notesBlock,
 			)
 			sendTelegram(telegramMessage, telegramChatIDOrders)
 		}

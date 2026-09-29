@@ -63,6 +63,14 @@ Notes:
 - For `pcod` (partial COD) orders, the WhatsApp "order received" message shows
   the outstanding `cod_balance` instead of the full `order.total`, since the
   advance was already paid online.
+- `order.checkout_source` is the authority on whether a payment gateway
+  actually confirmed the order — `order.payment_method` (`cod`/`prepaid`/`pcod`)
+  only describes *how* it was paid and is present either way, never proof a
+  gateway touched it. When `checkout_source` is `"native_fallback"` (no
+  gateway involved at all), the admin "New Order" Telegram message gets an
+  extra line: **FULL COD ORDER #\<display_id\> — Manual verification
+  required before shipping**, regardless of what `payment_method` says. `"shiprocket"` means
+  Shiprocket's own gateway handled it — `payment_method` can be trusted as-is.
 - Tracking comes directly from the `tracking` object in the payload — no
   parsing required (unlike WooCommerce's `meta_data` extraction).
 - Requests where `customer.email` is in `IGNORED_CUSTOMER_EMAILS` are

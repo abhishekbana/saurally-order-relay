@@ -206,6 +206,18 @@ var listing.
 - `order.id` (Medusa's internal id, e.g. `order_01JXYZABCD1234`) is used for
   dedup/flag-file keys; `order.display_id` (the human-facing number) is what
   customers/team actually see in WhatsApp and Telegram messages.
+- **`order.checkout_source` gates a COD-verification warning, not
+  `order.payment_method`.** `payment_method` (`cod`/`prepaid`/`pcod`) only
+  describes *how* an order claims to have been paid and is present
+  regardless of whether a gateway actually confirmed anything — never treat
+  it as proof of payment. `checkout_source == "native_fallback"` means no
+  gateway touched the order at all; the `order.placed` admin Telegram
+  message appends "🔴 FULL COD ORDER #\<display_id\> — Manual verification
+  required before shipping" in that case, regardless of `payment_method`.
+  `checkout_source == "shiprocket"` means Shiprocket's own gateway handled
+  it, so `payment_method` can be trusted as gateway-confirmed and no note is
+  added. Stacks with the mobile-only-email note above (both can apply to
+  the same order) via the `adminNotes` slice in `medusaOrderHandler`.
 - Logging is a single `*log.Logger` writing to both stdout and
   `LOG_FILE`, using a flat `LEVEL | component | key=value` text convention
   (not structured JSON) — follow that convention if you add log lines.
