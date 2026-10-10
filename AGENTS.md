@@ -40,7 +40,7 @@ fail the HTTP response.
 | Path           | Source      | Notes                                                        |
 |----------------|-------------|---------------------------------------------------------------|
 | `POST /woocommerce` | WooCommerce | Order lifecycle: `processing` → notify, `completed`/`shipped` → fulfilled WhatsApp |
-| `POST /medusa-order` | Medusa    | Order lifecycle: `order.placed` → notify, `order.shipped` → fulfilled WhatsApp, `order.canceled` → stored only, `order.email_corrected` → move Listmonk list + admin Telegram note. Gated by `MEDUSA_ORDER_ENABLED` (returns 503 while off — still being tested as of 2026-08-29) |
+| `POST /medusa-order` | Medusa    | Order lifecycle: `order.placed` → notify, `order.shipped` → fulfilled WhatsApp, `order.canceled` → stored only, `order.email_corrected` → move Listmonk list + admin Telegram note, `order.gst_updated` → merge GST attribs only. Gated by `MEDUSA_ORDER_ENABLED` (returns 503 while off — still being tested as of 2026-08-29) |
 | `POST /abc`         | GoKwik      | Abandoned cart capture; always returns 200 to stop GoKwik retries |
 | `POST /abc-src`     | Shiprocket/fastrr | Abandoned cart capture (checkout, not order); always returns 200 |
 | `GET /health`       | internal    | For a load balancer, currently unused in prod                |
@@ -163,6 +163,24 @@ var listing.
   `LISTMONK_LIST_ID_ORDERS` with full attribs (same construction as
   `order.placed`), and posts a quiet Telegram note to `TELEGRAM_CHAT_ID_ORDERS`.
   No WhatsApp — phone didn't change, those messages already went out.
+- **`order.gst_updated`** (`medusaOrderHandler`) — customer adds/corrects GST
+  details after the order was placed. Same envelope as `order.placed`, with
+  `order.gst_number` / `order.gst_company_name` optionally present — **can
+  arrive twice for the same order** (company name first, GST number later),
+  each delivery potentially carrying only one of the two fields. Only the
+  fields actually present in `gstAttribs` get merged into Listmonk (never
+  send an empty/missing field as an explicit attrib key — `listMonkUpsert`'s
+  merge would overwrite, i.e. erase, a value the other delivery already
+  set). No Telegram, no WhatsApp, no list change — Listmonk upsert only.
+  **Dedup is NOT the usual `medusa_order_<id>_<event>` key** — it's folded
+  into the key via `sha256(gstNumber + "|" + gstCompanyName)` (first 12 hex
+  chars), hashed rather than concatenated raw since `gst_company_name` is
+  free text and would otherwise end up unsanitized in a filesystem path.
+  This means two deliveries with *different* GST fields for the same order
+  are correctly treated as distinct events, not a duplicate — if this had
+  reused the plain `<id>_<event>` key like every other event, the second
+  (more complete) delivery would've been silently dropped by
+  `isDuplicateEvent`. Don't "simplify" this back to the plain key.
 - **`IGNORED_CUSTOMER_EMAILS`** (comma-separated, case-insensitive, parsed by
   `parseEmailSet()`) — emails to silently skip on `/medusa-order` and
   `/abc-src` only (not `/woocommerce` or GoKwik's `/abc`). Checked

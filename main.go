@@ -1414,8 +1414,20 @@ func medusaOrderHandler(w http.ResponseWriter, r *http.Request) {
 	displayID := fmt.Sprintf("%v", int(displayIDFloat))
 	paymentMethod, _ := order["payment_method"].(string)
 	checkoutSource, _ := order["checkout_source"].(string)
+	gstNumber, _ := order["gst_number"].(string)
+	gstCompanyName, _ := order["gst_company_name"].(string)
 
 	eventKey := fmt.Sprintf("medusa_order_%s_%s", orderID, event)
+	if event == "order.gst_updated" {
+		// GST details can arrive in two separate deliveries for the same order
+		// (company name first, number later) — fold the actual field values into
+		// the dedup key so a genuinely new delivery isn't dropped as a "duplicate"
+		// of an earlier, less-complete one. An exact repeat (same fields resent)
+		// still dedupes normally. Hashed rather than concatenated raw, since
+		// gst_company_name is free text and shouldn't end up in a file path.
+		fingerprint := sha256.Sum256([]byte(gstNumber + "|" + gstCompanyName))
+		eventKey = fmt.Sprintf("%s_%s", eventKey, hex.EncodeToString(fingerprint[:])[:12])
+	}
 
 	if isDuplicateEvent(eventKey) {
 		logger.Printf("INFO | medusa | duplicate event skipped | order_id=%s | event=%s", orderID, event)
@@ -1430,7 +1442,7 @@ func medusaOrderHandler(w http.ResponseWriter, r *http.Request) {
 	)
 
 	switch event {
-	case "order.placed", "order.shipped", "order.canceled", "order.email_corrected":
+	case "order.placed", "order.shipped", "order.canceled", "order.email_corrected", "order.gst_updated":
 		// known event, handled below
 	default:
 		logger.Printf("WARN | medusa | unknown event type | event=%s | order_id=%s", event, orderID)
@@ -1641,6 +1653,40 @@ func medusaOrderHandler(w http.ResponseWriter, r *http.Request) {
 			sourceListLabel,
 		)
 		sendTelegram(telegramMessage, telegramChatIDOrders)
+	} else if event == "order.gst_updated" {
+		// GST number/company name added or updated after the order was placed
+		// (order ID unchanged). Just merge whichever fields are present onto the
+		// existing Listmonk subscriber — no Telegram, no WhatsApp, no list move.
+		// Only include a field if it's actually present: listMonkUpsert merges
+		// attribs key-by-key, so sending an empty value here would overwrite
+		// (erase) a value the other delivery already set.
+		gstAttribs := map[string]any{}
+		if gstNumber != "" {
+			gstAttribs["gst_number"] = gstNumber
+		}
+		if gstCompanyName != "" {
+			gstAttribs["gst_company_name"] = gstCompanyName
+		}
+
+		if len(gstAttribs) == 0 {
+			logger.Printf("WARN | medusa | order.gst_updated with no gst fields | order_id=%s", orderID)
+		} else {
+			ordersListID := listMonkListIDOrders
+			if isMobilePlaceholderEmail(email) {
+				ordersListID = listMonkListIDMobileOrders
+			}
+
+			if err := listMonkUpsert(map[string]any{
+				"email":                    email,
+				"name":                     firstName + " " + lastName,
+				"lists":                    []int{ordersListID},
+				"preconfirm_subscriptions": true,
+				"status":                   "enabled",
+				"attribs":                  gstAttribs,
+			}); err != nil {
+				logger.Printf("ERROR | ListMonk upsert failed for gst update | email=%s | order_id=%s | err=%v", email, orderID, err)
+			}
+		}
 	}
 
 	storeJSON("medusa", fmt.Sprintf("%s_%s", orderID, strings.TrimPrefix(event, "order.")), envelope)

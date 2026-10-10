@@ -55,6 +55,7 @@ Listmonk list (`LISTMONK_LIST_ID_ORDERS`), Telegram channel
 | order.shipped (no tracking)| ✅              | ✅ Shipped                | ❌          | Yes   |
 | order.canceled             | ❌              | ❌                        | ❌          | Yes (stored only) |
 | order.email_corrected      | ✅ (new email)  | ❌                        | ✅ note     | Yes   |
+| order.gst_updated          | ✅ (attribs only) | ❌                      | ❌          | Yes (content-aware) |
 | duplicate webhook          | ❌ Skipped      | ❌ Skipped                | ❌ Skipped  | Yes   |
 
 Notes:
@@ -90,6 +91,16 @@ Notes:
   `LISTMONK_LIST_ID_ORDERS` with full order attribs, and posts a quiet
   Telegram admin note. No WhatsApp is sent — the phone number was already
   correct and those messages already went out.
+- **`order.gst_updated`** — the customer entered (or corrected) their GST
+  details after placing the order. Same envelope as `order.placed`, with
+  `order.gst_number` and/or `order.gst_company_name` added. Can arrive
+  *twice* for the same order (company name first, number later) — only
+  whichever field is actually present in a given delivery gets merged into
+  the Listmonk subscriber's attribs, so an earlier delivery's field is never
+  erased by a later one that's missing it. No Telegram, no WhatsApp, no list
+  change. Deduped on a hash of the GST field values rather than just
+  `order.id` + event, so the second (more complete) delivery isn't dropped
+  as a "duplicate" of the first.
 
 ---
 
