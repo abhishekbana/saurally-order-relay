@@ -71,6 +71,7 @@ Medusa doesn't use this — `medusaOrderHandler` switches directly on the payloa
 │   ├── shiprocket/   raw fastrr/Shiprocket checkout ABC payloads
 │   ├── woocommerce/  raw order payloads
 │   ├── medusa/       raw Medusa order payloads
+│   ├── leads/        leads CMS request/response per cart_id (abc-src only)
 │   └── whatsapp/     Fast2SMS API responses
 └── logs/app.log
 ```
@@ -91,7 +92,7 @@ Medusa doesn't use this — `medusaOrderHandler` switches directly on the payloa
 
 `sendTelegram()` fires in a goroutine (fire-and-forget). Guarded by `telegramEnabled`. Destinations:
 - New orders → `TELEGRAM_CHAT_ID_ORDERS` — WooCommerce (`processing` status) and Medusa (`order.placed`, tagged `[medusa-order]` in the title so it's distinguishable in the shared channel)
-- Abandoned carts → `TELEGRAM_CHAT_ID_ABC` — GoKwik (only when `is_abandoned=true`) and fastrr/`/abc-src` (always, no such flag exists in that payload)
+- Abandoned carts → `TELEGRAM_CHAT_ID_ABC` — GoKwik (only when `is_abandoned=true`); fastrr/`/abc-src` only as a fallback when the leads CMS call fails (see below) — the CMS sends its own Telegram message on success, so sending both would double-notify
 
 ### GoKwik ABC handler (`/abc`)
 
@@ -102,9 +103,10 @@ Medusa doesn't use this — `medusaOrderHandler` switches directly on the payloa
 ### Shiprocket/fastrr ABC handler (`/abc-src`)
 
 - Flat payload (not wrapped in a `carts` array like GoKwik); customer fields at the top level (`email`, `phone_number`, `first_name`, `last_name`), city/state from `billing_address`
-- No `is_abandoned` equivalent — every webhook always triggers Listmonk + Telegram + WhatsApp ABC1 (assumes fastrr only calls this for incomplete checkouts)
-- Reuses GoKwik's `telegramChatIDABC` and `msgABC1` — not source-segmented on Telegram/WhatsApp, only on the Listmonk list (mobile-only check, see above)
+- No `is_abandoned` equivalent — every webhook always triggers Listmonk + WhatsApp ABC1 (assumes fastrr only calls this for incomplete checkouts)
+- Reuses GoKwik's `msgABC1` for WhatsApp — not source-segmented there, only on the Listmonk list (mobile-only check, see above)
 - Cart URL field is `checkout_url` (vs. GoKwik's `abc_url`)
+- **After the Listmonk upsert, posts to an external leads CMS** via `postLeadToHelpdesk(cartID, payload)` — `POST LEADS_ENDPOINT_URL` with `x-api-key: LEADS_API_KEY`, synchronous, single attempt, no retry. `2xx` → lead created, CMS sends its own Telegram notification, **relay skips its own Telegram alert**. Anything else (non-2xx, error, timeout, or `LEADS_API_KEY` unset) → relay falls back to its own `telegramChatIDABC` alert, same as before this feature existed. WhatsApp ABC1 always fires regardless. Request/response stored to `storage/leads/<cart_id>.json`. No dedup on either side — a cart hitting `/abc-src` multiple times (stage changes) creates a separate lead attempt each time; this is accepted, don't add relay-side dedup unless asked.
 - Raw cart stored as `shiprocket/<email>_<HHMMSS>.json`
 
 ### Medusa order handler (`/medusa-order`)
@@ -135,5 +137,6 @@ Medusa doesn't use this — `medusaOrderHandler` switches directly on the payloa
 | `MEDUSA_ORDER_ENABLED` | Must be `"true"` to un-503 `/medusa-order` |
 | `ORDER_RELAY_SECRET` | Shared HMAC secret for `/medusa-order` — never commit the real value |
 | `IGNORED_CUSTOMER_EMAILS` | Comma-separated test emails to skip on `/medusa-order` and `/abc-src` |
+| `LEADS_ENDPOINT_URL` / `LEADS_API_KEY` | External leads CMS (helpdesk) for `/abc-src` — empty key = skip, fall back to relay's own Telegram |
 
 All datetime values sent to Listmonk must be `time.RFC3339` — non-ISO dates cause Listmonk 500 errors.

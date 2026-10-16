@@ -79,6 +79,13 @@ var (
 	// case-insensitive) — used to keep test traffic on the Shiprocket/fastrr checkout
 	// flow (Medusa orders + abandoned carts) out of real Listmonk/Telegram/WhatsApp.
 	ignoredCustomerEmails = parseEmailSet(os.Getenv("IGNORED_CUSTOMER_EMAILS"))
+
+	// Helpdesk leads CMS — /abc-src posts here after Listmonk; on success the
+	// CMS sends its own Telegram notification, so the relay skips its own.
+	// Empty LEADS_API_KEY is treated the same as a failed call (falls back
+	// to the relay's own Telegram alert).
+	leadsEndpointURL = getEnv("LEADS_ENDPOINT_URL", "https://help.saurally.com/api/leads/relay/abandoned-cart")
+	leadsAPIKey      = os.Getenv("LEADS_API_KEY")
 )
 
 //
@@ -307,6 +314,67 @@ func sendTelegram(message string, chatID string) {
 			)
 		}
 	}()
+}
+
+// ------------------------------------------------------------
+// LEADS CMS
+// ------------------------------------------------------------
+
+// postLeadToHelpdesk posts an abandoned-cart lead to the external helpdesk
+// CMS. Synchronous, single attempt, no retry — matches this relay's
+// fire-and-forget philosophy elsewhere (Telegram, WhatsApp, Medusa's own
+// "no retries" spec). Returns true only on a 2xx response; false on any
+// error, timeout, missing API key, or non-2xx status — the caller falls
+// back to its own Telegram alert in that case, since the CMS only sends
+// its own Telegram message on a successful lead creation.
+func postLeadToHelpdesk(cartID string, payload map[string]any) bool {
+	if leadsAPIKey == "" {
+		logger.Printf("INFO | leads | LEADS_API_KEY not configured, skipping | cart_id=%s", cartID)
+		return false
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		logger.Printf("ERROR | leads | failed to marshal payload | cart_id=%s | err=%v", cartID, err)
+		return false
+	}
+
+	req, err := http.NewRequest(http.MethodPost, leadsEndpointURL, bytes.NewBuffer(body))
+	if err != nil {
+		logger.Printf("ERROR | leads | failed to build request | cart_id=%s | err=%v", cartID, err)
+		return false
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", leadsAPIKey)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		logger.Printf("ERROR | leads | request failed | cart_id=%s | err=%v", cartID, err)
+		return false
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+
+	storeJSON("leads", cartID, map[string]any{
+		"request":     payload,
+		"status_code": resp.StatusCode,
+		"response":    string(respBody),
+	})
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		logger.Printf(
+			"ERROR | leads | non-2xx response | cart_id=%s | status=%d | body=%s",
+			cartID, resp.StatusCode, string(respBody),
+		)
+		return false
+	}
+
+	logger.Printf("INFO | leads | lead created | cart_id=%s | status=%d", cartID, resp.StatusCode)
+	return true
 }
 
 // ------------------------------------------------------------
@@ -656,6 +724,36 @@ func extractMedusaItems(itemsRaw []any) string {
 	}
 
 	return itemsText
+}
+
+// for extracting structured {name, quantity} items for the leads CMS payload
+// (same source data as extractCartItems, different shape for a different consumer)
+func extractLeadItems(cart map[string]any) []map[string]any {
+	items := []map[string]any{}
+
+	rawItems, ok := cart["items"].([]any)
+	if !ok {
+		return items
+	}
+
+	for _, it := range rawItems {
+		item, ok := it.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		title, _ := item["title"].(string)
+		qtyFloat, _ := item["quantity"].(float64)
+
+		if title != "" {
+			items = append(items, map[string]any{
+				"name":     title,
+				"quantity": int(qtyFloat),
+			})
+		}
+	}
+
+	return items
 }
 
 // for extracting ABC item names and quantities from cart object for ListMonk an for telegram message
@@ -1040,6 +1138,7 @@ func abcSrcHandler(w http.ResponseWriter, r *http.Request) {
 	)
 
 	cartItemsWithQty := extractCartItems(cart)
+	cartID := fmt.Sprintf("%v", cart["cart_id"])
 
 	abcListID := listMonkListIDABC
 	if isMobilePlaceholderEmail(email) {
@@ -1064,40 +1163,60 @@ func abcSrcHandler(w http.ResponseWriter, r *http.Request) {
 		logger.Printf("ERROR | ListMonk upsert failed for ABC-SRC email | email=%s | err=%v", email, err)
 	}
 
-	// ---- Telegram + WhatsApp ABC1 (every webhook here counts as abandoned) ----
-	telegramMessage := fmt.Sprintf(
-		"🛒 <b>Abandoned Cart (Shiprocket)</b>\n\n"+
-			"<b>Name:</b> %s %s\n"+
-			"<b>Email:</b> %s\n"+
-			"<b>Phone:</b> %s\n"+
-			"<b>City:</b> %s\n"+
-			"<b>State:</b> %s\n"+
-			"<b>Cart Value:</b> ₹%v\n"+
-			"<b>Stage:</b> %s\n\n"+
-			"<b>Items:</b>\n%s\n"+
-			"<a href=\"%s\">View Cart</a>",
-		firstName,
-		lastName,
-		email,
-		phone,
-		city,
-		state,
-		cartValue,
-		dropStage,
-		"• "+strings.Join(cartItemsWithQty, "\n• "),
-		cartURL,
-	)
+	// ---- Leads CMS (handles its own Telegram notification on success) ----
+	leadPayload := map[string]any{
+		"name":      firstName + " " + lastName,
+		"email":     email,
+		"phone":     phone,
+		"city":      city,
+		"state":     state,
+		"cartValue": cartValue,
+		"stage":     dropStage,
+		"cartUrl":   cartURL,
+	}
+	if leadItems := extractLeadItems(cart); len(leadItems) > 0 {
+		leadPayload["items"] = leadItems
+	}
 
-	logger.Printf(
-		"INFO | abc-src | sending telegram | email=%s | cart_id=%v",
-		email,
-		cart["cart_id"],
-	)
+	leadCreated := postLeadToHelpdesk(cartID, leadPayload)
 
-	sendTelegram(telegramMessage, telegramChatIDABC)
+	// ---- Telegram fallback — only if the leads CMS didn't already notify ----
+	if !leadCreated {
+		telegramMessage := fmt.Sprintf(
+			"🛒 <b>Abandoned Cart (Shiprocket)</b>\n\n"+
+				"<b>Name:</b> %s %s\n"+
+				"<b>Email:</b> %s\n"+
+				"<b>Phone:</b> %s\n"+
+				"<b>City:</b> %s\n"+
+				"<b>State:</b> %s\n"+
+				"<b>Cart Value:</b> ₹%v\n"+
+				"<b>Stage:</b> %s\n\n"+
+				"<b>Items:</b>\n%s\n"+
+				"<a href=\"%s\">View Cart</a>",
+			firstName,
+			lastName,
+			email,
+			phone,
+			city,
+			state,
+			cartValue,
+			dropStage,
+			"• "+strings.Join(cartItemsWithQty, "\n• "),
+			cartURL,
+		)
+
+		logger.Printf(
+			"INFO | abc-src | sending telegram | email=%s | cart_id=%v",
+			email,
+			cart["cart_id"],
+		)
+
+		sendTelegram(telegramMessage, telegramChatIDABC)
+	} else {
+		logger.Printf("INFO | abc-src | lead created, skipping relay telegram | cart_id=%s", cartID)
+	}
 
 	// WhatsApp ABC1 notification
-	cartID := fmt.Sprintf("%v", cart["cart_id"])
 	vars := fmt.Sprintf("%s|%v", firstName, cartValue)
 	if err := sendWhatsApp(cartID, phone, msgABC1, vars, "abc1"); err != nil {
 		logger.Printf("ERROR | whatsapp abc1 failed | cart_id=%s | err=%v", cartID, err)

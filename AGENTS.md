@@ -26,8 +26,10 @@ Medusa ───────POST /medusa-order──▶ medusaOrderHandler ─�
                                                          └─▶ WhatsApp via Fast2SMS
 GoKwik ABC ───POST /abc───────────▶ abcHandler          ──▶ Listmonk upsert
                                                          └─▶ Telegram + WhatsApp ABC1 (only if is_abandoned)
-Shiprocket/fastrr POST /abc-src───▶ abcSrcHandler        ──▶ Listmonk upsert (same ABC list/channel/template as GoKwik)
-                                                         └─▶ Telegram + WhatsApp ABC1 (always — no is_abandoned equivalent)
+Shiprocket/fastrr POST /abc-src───▶ abcSrcHandler        ──▶ Listmonk upsert (same ABC list/template as GoKwik)
+                                                         ├─▶ Leads CMS (postLeadToHelpdesk) — CMS notifies Telegram on success
+                                                         ├─▶ Telegram fallback (only if leads CMS call failed)
+                                                         └─▶ WhatsApp ABC1 (always — unaffected by leads outcome)
 ```
 
 Both handlers always persist the raw inbound payload to disk before/after
@@ -79,8 +81,9 @@ Every state transition is gated by a marker file so re-delivered webhooks
 
 Raw payloads land in `storage/gokwik/`, `storage/shiprocket/`,
 `storage/woocommerce/` and `storage/medusa/`; WhatsApp API responses in
-`storage/whatsapp/`. Nothing is kept in memory — the process can be killed
-and restarted at any point without losing dedup state.
+`storage/whatsapp/`; leads CMS request/response pairs in `storage/leads/`
+(keyed by `cart_id`, from `/abc-src` only). Nothing is kept in memory — the
+process can be killed and restarted at any point without losing dedup state.
 
 Note: neither `abcHandler` nor `abcSrcHandler` actually call
 `isDuplicateEvent()` — abandoned-cart webhooks are processed every time they
@@ -125,15 +128,27 @@ var listing.
   deliberate new feature, not a bug fix.
 - **`/abc-src` (Shiprocket/fastrr) has no `is_abandoned` equivalent** in its
   payload, unlike GoKwik's `/abc`. Every request is currently treated as an
-  abandoned-cart event and always triggers Listmonk + Telegram + WhatsApp
-  ABC1 — this assumes fastrr only calls this endpoint for incomplete
-  checkouts. If that assumption turns out to be wrong (e.g. fastrr also
-  fires it for completed payments), this will need a gate on `payment_status`
-  or `latest_stage` — check with the user before adding one speculatively.
-  `abcSrcHandler` reuses GoKwik's `telegramChatIDABC` and `msgABC1` — same
-  Telegram/WhatsApp destinations, not source-segmented. The Listmonk list
-  *is* conditionally segmented, though — see `isMobilePlaceholderEmail()`
-  below.
+  abandoned-cart event and always triggers Listmonk + WhatsApp ABC1 — this
+  assumes fastrr only calls this endpoint for incomplete checkouts. If that
+  assumption turns out to be wrong (e.g. fastrr also fires it for completed
+  payments), this will need a gate on `payment_status` or `latest_stage` —
+  check with the user before adding one speculatively.
+  `abcSrcHandler` reuses GoKwik's `msgABC1` for WhatsApp — not
+  source-segmented there. The Listmonk list *is* conditionally segmented,
+  though — see `isMobilePlaceholderEmail()` below.
+- **`postLeadToHelpdesk()`** (`main.go`) — `abcSrcHandler` posts each cart to
+  an external leads CMS (`LEADS_ENDPOINT_URL`, `x-api-key: LEADS_API_KEY`)
+  right after the Listmonk upsert. Synchronous, single attempt, no retry.
+  **On success (2xx) the relay's own `telegramChatIDABC` alert is skipped
+  entirely** — the CMS sends its own Telegram notification when it creates
+  a lead, so sending both would double-notify. Any failure (non-2xx,
+  network error, timeout, or `LEADS_API_KEY` empty) falls back to the
+  relay's own Telegram alert, unchanged from before this existed. Neither
+  side dedupes by `cart_id` — a cart that fires `/abc-src` multiple times
+  (e.g. across stage changes) creates a separate lead attempt each time;
+  this is accepted, not a bug to "fix" with relay-side dedup unless asked.
+  WhatsApp ABC1 is unconditional either way, unaffected by the leads call's
+  outcome.
 - **`isMobilePlaceholderEmail()`** (`main.go`) detects fastrr's placeholder
   email for mobile-only checkouts (no real email given): `<mobile>@fastrr.com`,
   matched by suffix, case-insensitive. Only checked in `abcSrcHandler` and

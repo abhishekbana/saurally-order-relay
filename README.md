@@ -124,10 +124,22 @@ fields (`email`, `phone_number`, `first_name`, `last_name`) at the top level
 instead of nested under `customer`.
 
 **No `is_abandoned` flag exists in this payload** — every webhook received on
-this endpoint is treated as an abandoned-cart event and always triggers the
-Listmonk upsert + Telegram alert + WhatsApp ABC1 nudge (this assumes fastrr
-only calls this endpoint for incomplete/dropped checkouts; a separate order
-webhook is expected to handle completed orders).
+this endpoint is treated as an abandoned-cart event and always triggers a
+Listmonk upsert + WhatsApp ABC1 nudge (this assumes fastrr only calls this
+endpoint for incomplete/dropped checkouts; a separate order webhook is
+expected to handle completed orders).
+
+After the Listmonk upsert, the cart is posted to an external leads CMS
+(`LEADS_ENDPOINT_URL`, auth via `LEADS_API_KEY`). **If that succeeds (2xx),
+no Telegram alert is sent from here** — the CMS sends its own Telegram
+notification on a successful lead. If it fails (non-2xx, network error,
+timeout, or `LEADS_API_KEY` unset), the relay falls back to its own
+Telegram alert to `TELEGRAM_CHAT_ID_ABC`, same message as before this
+feature existed. Single attempt, no retry. **Neither side dedupes** — the
+CMS treats one call as one lead with no upsert-by-cart, and this relay has
+no dedup on `/abc-src` either, so a cart that fires this endpoint multiple
+times across stage changes will create a separate lead each time (accepted
+trade-off, not a bug).
 
 Field mapping vs. GoKwik:
 
@@ -212,6 +224,10 @@ ORDER_RELAY_SECRET=xxxxxxxx
 # Test email exclusion (/medusa-order and /abc-src)
 IGNORED_CUSTOMER_EMAILS=
 
+# Leads CMS (helpdesk) — /abc-src only
+LEADS_ENDPOINT_URL=https://help.saurally.com/api/leads/relay/abandoned-cart
+LEADS_API_KEY=xxxxxxxx
+
 # Timezone
 TZ=Asia/Kolkata
 ```
@@ -226,6 +242,7 @@ storage/
 ├── shiprocket/   Raw Shiprocket/fastrr checkout payloads
 ├── woocommerce/  Raw WooCommerce payloads
 ├── medusa/       Raw Medusa order payloads
+├── leads/        Leads CMS request/response per cart (abc-src)
 ├── whatsapp/     WhatsApp API responses
 ├── events/       Idempotency markers
 ├── flags/        Internal flags
