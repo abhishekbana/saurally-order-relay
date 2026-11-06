@@ -49,7 +49,7 @@ GET  /health        →  200 ok
 
 **`storage/flags/<key>`** — `flagPath` / `flagExists` / `createFlag`. WhatsApp-send dedup, keyed `<orderID>_<state>`. Used inside the WhatsApp block of both `woocommerceHandler` and `medusaOrderHandler` (`medusa_<order.id>` as the orderID prefix there) — belt-and-suspenders on top of `isDuplicateEvent`, not dead code for Medusa.
 
-**`abcHandler` and `abcSrcHandler` do not dedupe at all** — every abandoned-cart webhook is processed independently, every time. This is intentional existing behavior, not an oversight.
+**`abcHandler` does not dedupe at all** (intentional). **`abcSrcHandler` has a 30-minute email-or-phone window** — `abcSrcSeenRecently()` / `markAbcSrcSeen()`, markers in `storage/abc-src-recent/` (hashed, mtime = age, phone normalized to last 10 digits). Within the window it skips the leads CMS, Telegram fallback and WhatsApp ABC1, but still runs the Listmonk upsert and raw storage. Markers are written only for processed hits (fixed window).
 
 ### Status normalization (WooCommerce only)
 
@@ -106,7 +106,7 @@ Medusa doesn't use this — `medusaOrderHandler` switches directly on the payloa
 - No `is_abandoned` equivalent — every webhook always triggers Listmonk + WhatsApp ABC1 (assumes fastrr only calls this for incomplete checkouts)
 - Reuses GoKwik's `msgABC1` for WhatsApp — not source-segmented there, only on the Listmonk list (mobile-only check, see above)
 - Cart URL field is `checkout_url` (vs. GoKwik's `abc_url`)
-- **After the Listmonk upsert, posts to an external leads CMS** via `postLeadToHelpdesk(cartID, payload)` — `POST LEADS_ENDPOINT_URL` with `x-api-key: LEADS_API_KEY`, synchronous, single attempt, no retry. `2xx` → lead created, CMS sends its own Telegram notification, **relay skips its own Telegram alert**. Anything else (non-2xx, error, timeout, or `LEADS_API_KEY` unset) → relay falls back to its own `telegramChatIDABC` alert, same as before this feature existed. WhatsApp ABC1 always fires regardless. Request/response stored to `storage/leads/<cart_id>.json`. No dedup on either side — a cart hitting `/abc-src` multiple times (stage changes) creates a separate lead attempt each time; this is accepted, don't add relay-side dedup unless asked.
+- **After the Listmonk upsert, posts to an external leads CMS** via `postLeadToHelpdesk(cartID, payload)` — `POST LEADS_ENDPOINT_URL` with `x-api-key: LEADS_API_KEY`, synchronous, single attempt, no retry. `2xx` → lead created, CMS sends its own Telegram notification, **relay skips its own Telegram alert**. Anything else (non-2xx, error, timeout, or `LEADS_API_KEY` unset) → relay falls back to its own `telegramChatIDABC` alert, same as before this feature existed. WhatsApp ABC1 always fires regardless. Request/response stored to `storage/leads/<cart_id>.json`. The CMS doesn't dedupe; the relay suppresses repeat hits for the same email or phone within 30 minutes (see above). After that window, a repeat creates a new lead.
 - Raw cart stored as `shiprocket/<email>_<HHMMSS>.json`
 
 ### Medusa order handler (`/medusa-order`)

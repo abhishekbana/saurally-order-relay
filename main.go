@@ -205,6 +205,64 @@ func createFlag(p string) {
 	_ = os.WriteFile(p, []byte(nowISO()), 0644)
 }
 
+// Window within which a repeat /abc-src hit for the same email or phone is
+// treated as a duplicate lead (fastrr fires multiple times per checkout).
+const abcSrcRecentWindow = 30 * time.Minute
+
+// abcSrcRecentMarker returns the marker path for an email/phone identity.
+// Hashed so free-form input never lands raw in a filesystem path.
+func abcSrcRecentMarker(kind, value string) string {
+	sum := sha256.Sum256([]byte(kind + ":" + value))
+	return filepath.Join(storageDir, "abc-src-recent", kind+"_"+hex.EncodeToString(sum[:])[:16])
+}
+
+// normalizePhone keeps the last 10 digits so "+91 98xxxxxxx" and "98xxxxxxx"
+// match the same marker.
+func normalizePhone(phone string) string {
+	var b strings.Builder
+	for _, r := range phone {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	d := b.String()
+	if len(d) > 10 {
+		d = d[len(d)-10:]
+	}
+	return d
+}
+
+// abcSrcSeenRecently reports whether the email or phone was processed by
+// /abc-src within abcSrcRecentWindow (based on marker mtime). Empty values
+// are ignored. Fixed window: markers are only written for processed
+// (non-duplicate) hits, so repeated pings don't extend it indefinitely.
+func abcSrcSeenRecently(email, phone string) (bool, string) {
+	check := func(kind, value string) bool {
+		if value == "" {
+			return false
+		}
+		info, err := os.Stat(abcSrcRecentMarker(kind, value))
+		return err == nil && time.Since(info.ModTime()) < abcSrcRecentWindow
+	}
+	if check("email", strings.ToLower(strings.TrimSpace(email))) {
+		return true, "email"
+	}
+	if check("phone", normalizePhone(phone)) {
+		return true, "phone"
+	}
+	return false, ""
+}
+
+// markAbcSrcSeen (re)writes the email/phone markers with the current time.
+func markAbcSrcSeen(email, phone string) {
+	if e := strings.ToLower(strings.TrimSpace(email)); e != "" {
+		createFlag(abcSrcRecentMarker("email", e))
+	}
+	if p := normalizePhone(phone); p != "" {
+		createFlag(abcSrcRecentMarker("phone", p))
+	}
+}
+
 //
 // ------------------------------------------------------------
 // STATUS
@@ -1140,6 +1198,19 @@ func abcSrcHandler(w http.ResponseWriter, r *http.Request) {
 	cartItemsWithQty := extractCartItems(cart)
 	cartID := fmt.Sprintf("%v", cart["cart_id"])
 
+	// Same email/phone already processed within the window → skip lead +
+	// Telegram + WhatsApp. Listmonk upsert and raw storage still run so cart
+	// attribs stay fresh and the payload is kept for audit.
+	recentDup, recentDupBy := abcSrcSeenRecently(email, phone)
+	if recentDup {
+		logger.Printf(
+			"INFO | abc-src | duplicate within %s, skipping lead/telegram/whatsapp | matched=%s | email=%s | phone=%s | cart_id=%s",
+			abcSrcRecentWindow, recentDupBy, email, phone, cartID,
+		)
+	} else {
+		markAbcSrcSeen(email, phone)
+	}
+
 	abcListID := listMonkListIDABC
 	if isMobilePlaceholderEmail(email) {
 		abcListID = listMonkListIDMobileABC
@@ -1163,6 +1234,27 @@ func abcSrcHandler(w http.ResponseWriter, r *http.Request) {
 		logger.Printf("ERROR | ListMonk upsert failed for ABC-SRC email | email=%s | err=%v", email, err)
 	}
 
+	if !recentDup {
+		abcSrcNotify(cart, cartID, email, phone, firstName, lastName, city, state, cartURL, dropStage, cartValue, cartItemsWithQty)
+	}
+
+	// ---- persist raw cart ----
+	if err := storeJSON(
+		"shiprocket",
+		fmt.Sprintf("%s_%s", email, time.Now().Format("150405")),
+		cart,
+	); err != nil {
+		logger.Printf(
+			"ERROR | abc-src | failed to store cart | email=%s | err=%v",
+			email,
+			err,
+		)
+	}
+}
+
+// abcSrcNotify runs the lead/notification side of /abc-src: leads CMS,
+// Telegram fallback, WhatsApp ABC1.
+func abcSrcNotify(cart map[string]any, cartID, email, phone, firstName, lastName, city, state, cartURL, dropStage string, cartValue any, cartItemsWithQty []string) {
 	// ---- Leads CMS (handles its own Telegram notification on success) ----
 	leadPayload := map[string]any{
 		"name":      firstName + " " + lastName,
@@ -1222,19 +1314,6 @@ func abcSrcHandler(w http.ResponseWriter, r *http.Request) {
 		logger.Printf("ERROR | whatsapp abc1 failed | cart_id=%s | err=%v", cartID, err)
 	} else {
 		logger.Printf("INFO | whatsapp abc1 sent | cart_id=%s", cartID)
-	}
-
-	// ---- persist raw cart ----
-	if err := storeJSON(
-		"shiprocket",
-		fmt.Sprintf("%s_%s", email, time.Now().Format("150405")),
-		cart,
-	); err != nil {
-		logger.Printf(
-			"ERROR | abc-src | failed to store cart | email=%s | err=%v",
-			email,
-			err,
-		)
 	}
 }
 

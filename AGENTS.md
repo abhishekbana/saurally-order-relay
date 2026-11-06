@@ -85,11 +85,16 @@ Raw payloads land in `storage/gokwik/`, `storage/shiprocket/`,
 (keyed by `cart_id`, from `/abc-src` only). Nothing is kept in memory — the
 process can be killed and restarted at any point without losing dedup state.
 
-Note: neither `abcHandler` nor `abcSrcHandler` actually call
-`isDuplicateEvent()` — abandoned-cart webhooks are processed every time they
-arrive (no dedup), unlike the order handlers. This is intentional/existing
-behavior, not an oversight — keep it that way unless asked to add dedup
-there.
+Note: neither `abcHandler` nor `abcSrcHandler` call `isDuplicateEvent()`.
+GoKwik's `/abc` has no dedup at all (intentional — keep it that way unless
+asked). `/abc-src` has a **30-minute email-or-phone window** instead
+(`abcSrcSeenRecently()` / `markAbcSrcSeen()`, markers in
+`storage/abc-src-recent/{email,phone}_<sha256 prefix>`, age = file mtime,
+phone normalized to last 10 digits): if either the email or the phone was
+processed within `abcSrcRecentWindow`, the leads CMS call, Telegram fallback
+and WhatsApp ABC1 are skipped. Listmonk upsert and raw storage still run.
+Markers are only written for processed hits (fixed window, not sliding), so
+a cart that pings every 20 minutes still gets a lead every 30+ minutes.
 
 ## Configuration
 
@@ -143,12 +148,12 @@ var listing.
   entirely** — the CMS sends its own Telegram notification when it creates
   a lead, so sending both would double-notify. Any failure (non-2xx,
   network error, timeout, or `LEADS_API_KEY` empty) falls back to the
-  relay's own Telegram alert, unchanged from before this existed. Neither
-  side dedupes by `cart_id` — a cart that fires `/abc-src` multiple times
-  (e.g. across stage changes) creates a separate lead attempt each time;
-  this is accepted, not a bug to "fix" with relay-side dedup unless asked.
-  WhatsApp ABC1 is unconditional either way, unaffected by the leads call's
-  outcome.
+  relay's own Telegram alert, unchanged from before this existed. The CMS
+  doesn't dedupe; the relay suppresses repeat hits for the same email or
+  phone within 30 minutes (see the idempotency note above). Repeats after
+  the window create a new lead. WhatsApp ABC1 is unaffected by the leads
+  call's outcome, but it's skipped together with the lead in the 30-minute
+  window.
 - **`isMobilePlaceholderEmail()`** (`main.go`) detects fastrr's placeholder
   email for mobile-only checkouts (no real email given): `<mobile>@fastrr.com`,
   matched by suffix, case-insensitive. Only checked in `abcSrcHandler` and

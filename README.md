@@ -135,11 +135,13 @@ no Telegram alert is sent from here** — the CMS sends its own Telegram
 notification on a successful lead. If it fails (non-2xx, network error,
 timeout, or `LEADS_API_KEY` unset), the relay falls back to its own
 Telegram alert to `TELEGRAM_CHAT_ID_ABC`, same message as before this
-feature existed. Single attempt, no retry. **Neither side dedupes** — the
-CMS treats one call as one lead with no upsert-by-cart, and this relay has
-no dedup on `/abc-src` either, so a cart that fires this endpoint multiple
-times across stage changes will create a separate lead each time (accepted
-trade-off, not a bug).
+feature existed. Single attempt, no retry.
+
+**30-minute duplicate window:** if the same email *or* phone was already
+processed on `/abc-src` within the last 30 minutes, the leads CMS call,
+Telegram fallback and WhatsApp ABC1 are skipped (Listmonk upsert and raw
+payload storage still happen). Markers live in `storage/abc-src-recent/`.
+The window counts from the last processed hit, not the last received one.
 
 Field mapping vs. GoKwik:
 
