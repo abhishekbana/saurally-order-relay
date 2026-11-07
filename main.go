@@ -34,7 +34,6 @@ var (
 	dataDir    = getEnv("DATA_DIR", "/data")
 	storageDir = filepath.Join(dataDir, "storage")
 
-	gokwikDir      = filepath.Join(storageDir, "gokwik")
 	woocommerceDir = filepath.Join(storageDir, "woocommerce")
 	whatsappDir    = filepath.Join(storageDir, "whatsapp")
 	eventsDir      = filepath.Join(storageDir, "events")
@@ -920,211 +919,9 @@ func isDuplicateEvent(key string) bool {
 // ------------------------------------------------------------
 //
 
-// GoKwik ABC handler (strict customer extraction + is_abandoned guard)
-func abcHandler(w http.ResponseWriter, r *http.Request) {
-
-	// Always respond OK to avoid GoKwik retries
-	defer func() {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ok"}`))
-	}()
-
-	// Accept JSON only
-	if !strings.Contains(r.Header.Get("Content-Type"), "application/json") {
-		logger.Printf("INFO | abc | non-json request ignored")
-		return
-	}
-
-	// ---- read raw body ----
-	rawBody, err := io.ReadAll(r.Body)
-	if err != nil {
-		logger.Printf("ERROR | abc | failed to read body | err=%v", err)
-		return
-	}
-
-	logger.Printf("DEBUG | abc raw payload | %s", string(rawBody))
-
-	// Restore body for decoding
-	r.Body = io.NopCloser(bytes.NewBuffer(rawBody))
-
-	var payload map[string]any
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		logger.Printf("ERROR | abc | invalid json | err=%v", err)
-		return
-	}
-
-	// ---- carts extraction ----
-	cartsRaw, ok := payload["carts"]
-	if !ok {
-		logger.Printf("ERROR | abc | carts key missing in payload")
-		return
-	}
-
-	carts, ok := cartsRaw.([]any)
-	if !ok || len(carts) == 0 {
-		logger.Printf("ERROR | abc | carts empty or invalid")
-		return
-	}
-
-	logger.Printf("INFO | abc | carts_received=%d", len(carts))
-
-	// ---- process each cart ----
-	for i, c := range carts {
-
-		cart, ok := c.(map[string]any)
-		if !ok {
-			logger.Printf("ERROR | abc | cart[%d] invalid type", i)
-			continue
-		}
-
-		// ---- is_abandoned flag ----
-		isAbandoned, _ := cart["is_abandoned"].(bool)
-
-		logger.Printf(
-			"DEBUG | abc | is_abandoned raw=%v type=%T",
-			cart["is_abandoned"],
-			cart["is_abandoned"],
-		)
-
-		logger.Printf(
-			"DEBUG | abc | cart flags | cart_id=%v is_abandoned=%v",
-			cart["cart_id"],
-			isAbandoned,
-		)
-
-		// ---- strict customer extraction ----
-		customerRaw, ok := cart["customer"]
-		if !ok {
-			logger.Printf("ERROR | abc | cart[%d] missing customer object", i)
-			continue
-		}
-
-		customer, ok := customerRaw.(map[string]any)
-		if !ok {
-			logger.Printf("ERROR | abc | cart[%d] customer invalid type", i)
-			continue
-		}
-
-		email, _ := customer["email"].(string)
-		phone, _ := customer["phone"].(string)
-		firstName, _ := customer["firstname"].(string)
-		lastName, _ := customer["lastname"].(string)
-
-		address, _ := cart["address"].(map[string]any)
-		city, _ := address["city"].(string)
-		state, _ := address["state"].(string)
-
-		if email == "" || phone == "" || firstName == "" {
-			logger.Printf(
-				"ERROR | abc | missing critical customer fields | email=%q phone=%q firstname=%q cart_id=%v",
-				email,
-				phone,
-				firstName,
-				cart["cart_id"],
-			)
-		}
-
-		// ---- cart fields ----
-		cartURL, _ := cart["abc_url"].(string)
-		cartValue := cart["total_price"]
-		dropStage, _ := cart["drop_stage"].(string)
-
-		logger.Printf(
-			"INFO | abc | cart processed | email=%s | drop_stage=%s | cart_id=%v",
-			email,
-			dropStage,
-			cart["cart_id"],
-		)
-
-		cartItemsWithQty := extractCartItems(cart)
-
-		if err := listMonkUpsert(map[string]any{
-			"email":                    email,
-			"name":                     firstName + " " + lastName,
-			"lists":                    []int{listMonkListIDABC},
-			"preconfirm_subscriptions": true,
-			"status":                   "enabled",
-			"attribs": map[string]any{
-				"phone":      phone,
-				"cart_url":   cartURL,
-				"abc_stage":  0, // intial stage for all abandoned carts - ABC logic starts from stage 0 in n8n
-				"drop_stage": dropStage,
-				"cart_value": cartValue,
-				"cart_items": cartItemsWithQty,
-			},
-		}); err != nil {
-			logger.Printf("ERROR | ListMonk upsert failed for ABC email | email=%s | err=%v", email, err)
-		}
-
-		// ---- Telegram message (send ONLY if abandoned) ----
-		if isAbandoned {
-
-			telegramMessage := fmt.Sprintf(
-				"🛒 <b>Abandoned Cart</b>\n\n"+
-					"<b>Name:</b> %s %s\n"+
-					"<b>Email:</b> %s\n"+
-					"<b>Phone:</b> %s\n"+
-					"<b>City:</b> %s\n"+
-					"<b>State:</b> %s\n"+
-					"<b>Cart Value:</b> ₹%v\n"+
-					"<b>Stage:</b> %s\n\n"+
-					"<b>Items:</b>\n%s\n"+
-					"<a href=\"%s\">View Cart</a>",
-				firstName,
-				lastName,
-				email,
-				phone,
-				city,
-				state,
-				cartValue,
-				dropStage,
-				"• "+strings.Join(cartItemsWithQty, "\n• "),
-				cartURL,
-			)
-
-			logger.Printf(
-				"INFO | abc | sending telegram | email=%s | cart_id=%v",
-				email,
-				cart["cart_id"],
-			)
-
-			sendTelegram(telegramMessage, telegramChatIDABC)
-
-			// WhatsApp ABC1 notification
-			cartID := fmt.Sprintf("%v", cart["cart_id"])
-			vars := fmt.Sprintf("%s|%v", firstName, cartValue)
-			if err := sendWhatsApp(cartID, phone, msgABC1, vars, "abc1"); err != nil {
-				logger.Printf("ERROR | whatsapp abc1 failed | cart_id=%s | err=%v", cartID, err)
-			} else {
-				logger.Printf("INFO | whatsapp abc1 sent | cart_id=%s", cartID)
-			}
-
-		} else {
-			logger.Printf(
-				"INFO | abc | cart not abandoned | telegram skipped | cart_id=%v",
-				cart["cart_id"],
-			)
-		}
-
-		// ---- persist raw cart ----
-		if err := storeJSON(
-			"gokwik",
-			fmt.Sprintf("%s_%s", email, time.Now().Format("150405")),
-			cart,
-		); err != nil {
-			logger.Printf(
-				"ERROR | abc | failed to store cart | email=%s | err=%v",
-				email,
-				err,
-			)
-		}
-	}
-}
-
-// Shiprocket/fastrr (SRC) checkout abandoned cart handler — same behavior as
-// abcHandler (GoKwik), adapted to the fastrr payload shape: a single flat
-// cart object (no "carts" wrapper) and no is_abandoned flag, so every
-// webhook received here is treated as an abandoned-cart event.
+// Shiprocket/fastrr (SRC) checkout abandoned cart handler. The payload is a
+// single flat cart object with no is_abandoned flag, so every webhook
+// received here is treated as an abandoned-cart event.
 func abcSrcHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Always respond OK to avoid retries
@@ -1930,7 +1727,6 @@ func main() {
 	// =========================================================
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/abc", abcHandler)
 	mux.HandleFunc("/abc-src", abcSrcHandler)
 	mux.HandleFunc("/woocommerce", woocommerceHandler)
 	mux.HandleFunc("/medusa-order", medusaOrderHandler)

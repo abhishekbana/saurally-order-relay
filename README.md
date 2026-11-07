@@ -1,6 +1,6 @@
 # Saurally Order Relay
 
-Webhook relay service written in Go. Receives commerce events from WooCommerce and GoKwik, syncs subscribers to Listmonk, sends WhatsApp notifications, and posts Telegram alerts — with duplicate prevention and restart-safe storage.
+Webhook relay service written in Go. Receives commerce events from WooCommerce, Medusa and Shiprocket/fastrr, syncs subscribers to Listmonk, sends WhatsApp notifications, and posts Telegram alerts — with duplicate prevention and restart-safe storage.
 
 ---
 
@@ -10,7 +10,6 @@ Webhook relay service written in Go. Receives commerce events from WooCommerce a
 |---------------|--------|------------|--------------------------------|
 | /woocommerce  | POST   | WooCommerce | Order lifecycle processing    |
 | /medusa-order | POST   | Medusa      | Order lifecycle processing (disabled until `MEDUSA_ORDER_ENABLED=true`) |
-| /abc          | POST   | GoKwik      | Abandoned cart ingestion      |
 | /abc-src      | POST   | Shiprocket/fastrr | Abandoned cart ingestion (checkout) |
 | /health       | GET    | Internal    | Health check                  |
 | /(root)       | ANY    | Bots        | Blocked and logged            |
@@ -104,24 +103,10 @@ Notes:
 
 ---
 
-## GoKwik Abandoned Cart Logic
-
-Only carts with `is_abandoned = true` are processed. Each cart is handled independently.
-
-Per cart:
-- Customer data extracted from `cart.customer` (email, phone, firstname required)
-- Subscriber upserted into Listmonk (ABC list)
-- Telegram alert sent with cart details
-- Raw payload stored on disk
-
----
-
 ## Shiprocket/fastrr Abandoned Cart Logic (`/abc-src`)
 
-Same behavior as GoKwik's `/abc`, adapted to the fastrr checkout payload shape:
-a single flat cart object (not wrapped in a `carts` array), with customer
-fields (`email`, `phone_number`, `first_name`, `last_name`) at the top level
-instead of nested under `customer`.
+The fastrr checkout payload is a single flat cart object, with customer
+fields (`email`, `phone_number`, `first_name`, `last_name`) at the top level.
 
 **No `is_abandoned` flag exists in this payload** — every webhook received on
 this endpoint is treated as an abandoned-cart event and always triggers a
@@ -143,18 +128,18 @@ Telegram fallback and WhatsApp ABC1 are skipped (Listmonk upsert and raw
 payload storage still happen). Markers live in `storage/abc-src-recent/`.
 The window counts from the last processed hit, not the last received one.
 
-Field mapping vs. GoKwik:
+Field mapping:
 
-| GoKwik (`/abc`)      | fastrr (`/abc-src`)         |
-|-----------------------|-------------------------------|
-| `cart.customer.email` | `email`                       |
-| `cart.customer.phone` | `phone_number`                |
-| `cart.customer.firstname`/`lastname` | `first_name`/`last_name` |
-| `cart.address.city`/`state` | `billing_address.city`/`state` |
-| `cart.abc_url`        | `checkout_url`                |
-| `cart.total_price`    | `total_price`                 |
-| `cart.drop_stage`     | `latest_stage`                |
-| `cart.items[].title`/`quantity` | `items[].title`/`quantity` (same shape) |
+| Used as              | fastrr field                  |
+|----------------------|-------------------------------|
+| email                | `email`                       |
+| phone                | `phone_number`                |
+| name                 | `first_name`/`last_name`      |
+| city / state         | `billing_address.city`/`state` |
+| cart URL             | `checkout_url`                |
+| cart value           | `total_price`                 |
+| drop stage           | `latest_stage`                |
+| items                | `items[].title`/`quantity`    |
 
 Raw payloads stored under `storage/shiprocket/`.
 
@@ -190,7 +175,7 @@ All datetime fields use ISO 8601 (`time.RFC3339`). Non-ISO dates cause Listmonk 
 |-----------------|--------------------------------------------|
 | Order received  | `storage/events/order_<ID>_processing`     |
 | Order shipped   | `storage/events/order_<ID>_shipped`        |
-| Abandoned cart  | `storage/events/abc_<CART_ID>`             |
+| Abandoned cart (`/abc-src`) | `storage/abc-src-recent/{email,phone}_<hash>` (30-min window) |
 
 If a marker exists, the event is skipped entirely.
 
@@ -240,7 +225,6 @@ TZ=Asia/Kolkata
 
 ```
 storage/
-├── gokwik/       Raw GoKwik payloads
 ├── shiprocket/   Raw Shiprocket/fastrr checkout payloads
 ├── woocommerce/  Raw WooCommerce payloads
 ├── medusa/       Raw Medusa order payloads

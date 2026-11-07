@@ -20,7 +20,7 @@ services:
       # Source code
       - /mnt/SSD256/configs/saurally-order-relay:/app
 
-      # Persistent storage (events, gokwik, whatsapp, etc.)
+      # Persistent storage (events, shiprocket, whatsapp, etc.)
       - /mnt/SSD256/configs/saurally-order-relay/storage:/data/storage
 
       # Persistent logs

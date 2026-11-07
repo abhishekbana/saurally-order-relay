@@ -24,16 +24,14 @@ WooCommerce ──POST /woocommerce───▶ woocommerceHandler ──▶ Lis
 Medusa ───────POST /medusa-order──▶ medusaOrderHandler ──▶ Listmonk upsert (same list as WooCommerce)
                                                          ├─▶ Telegram alert (same channel as WooCommerce)
                                                          └─▶ WhatsApp via Fast2SMS
-GoKwik ABC ───POST /abc───────────▶ abcHandler          ──▶ Listmonk upsert
-                                                         └─▶ Telegram + WhatsApp ABC1 (only if is_abandoned)
-Shiprocket/fastrr POST /abc-src───▶ abcSrcHandler        ──▶ Listmonk upsert (same ABC list/template as GoKwik)
+Shiprocket/fastrr POST /abc-src───▶ abcSrcHandler        ──▶ Listmonk upsert (ABC list)
                                                          ├─▶ Leads CMS (postLeadToHelpdesk) — CMS notifies Telegram on success
                                                          ├─▶ Telegram fallback (only if leads CMS call failed)
                                                          └─▶ WhatsApp ABC1 (always — unaffected by leads outcome)
 ```
 
-Both handlers always persist the raw inbound payload to disk before/after
-processing, and both are built to degrade gracefully — a failure in one
+All handlers always persist the raw inbound payload to disk before/after
+processing, and all are built to degrade gracefully — a failure in one
 integration (e.g. Listmonk down) is logged but does not block the others or
 fail the HTTP response.
 
@@ -43,7 +41,6 @@ fail the HTTP response.
 |----------------|-------------|---------------------------------------------------------------|
 | `POST /woocommerce` | WooCommerce | Order lifecycle: `processing` → notify, `completed`/`shipped` → fulfilled WhatsApp |
 | `POST /medusa-order` | Medusa    | Order lifecycle: `order.placed` → notify, `order.shipped` → fulfilled WhatsApp, `order.canceled` → stored only, `order.email_corrected` → move Listmonk list + admin Telegram note, `order.gst_updated` → merge GST attribs only. Gated by `MEDUSA_ORDER_ENABLED` (returns 503 while off — still being tested as of 2026-08-29) |
-| `POST /abc`         | GoKwik      | Abandoned cart capture; always returns 200 to stop GoKwik retries |
 | `POST /abc-src`     | Shiprocket/fastrr | Abandoned cart capture (checkout, not order); always returns 200 |
 | `GET /health`       | internal    | For a load balancer, currently unused in prod                |
 | `* /`               | anything else | 404 + logged (blocks bot scans of the root path)          |
@@ -53,7 +50,7 @@ fail the HTTP response.
 - **Fast2SMS (WhatsApp)** — `sendWhatsApp()`. Template-based messages keyed
   by `MESSAGE_ID_ORDER_RECEIVED` / `MESSAGE_ID_ORDER_SHIPPED` /
   `MESSAGE_ID_ORDER_SHIPPED_WITH_TRACKING` / `MESSAGE_ID_ABC1` (abandoned-cart
-  nudge, sent by both `abcHandler` and `abcSrcHandler`). Response bodies are
+  nudge, sent by `abcSrcHandler`). Response bodies are
   stored under `storage/whatsapp/`.
 - **Telegram** — `sendTelegram()`. Fire-and-forget (runs in a goroutine),
   HTML-formatted messages, two separate chat IDs for order vs. abandoned-cart
@@ -63,15 +60,15 @@ fail the HTTP response.
   Listmonk attribute consumed by an external n8n automation (stage 0 =
   abandoned cart entry point, stage 3+ = became a paying customer) — this
   repo doesn't own that logic, just writes the field.
-- **Mautic** — referenced in [.env.example](.env.example) but was fully
-  removed from the code (see commit `639bc20`, "removed all traces of
-  mautic"). The `MAUTIC_*` vars in `.env.example` are stale; don't
-  reintroduce Mautic code based on them without checking with the user first.
+- **Removed integrations** — Mautic (CRM) and GoKwik (`/abc` abandoned
+  carts) are no longer used and have been removed from code, config and
+  docs. Don't reintroduce either without checking with the user first.
+  Requests to `/abc` now fall through to the `/` catch-all (404).
 
 ### Idempotency & storage
 
 Every state transition is gated by a marker file so re-delivered webhooks
-(WooCommerce/GoKwik both retry) are safe:
+(WooCommerce retries) are safe:
 
 - `isDuplicateEvent(key)` — event-level dedup, `storage/events/<key>`, e.g.
   `order_51281_processing`.
@@ -79,15 +76,14 @@ Every state transition is gated by a marker file so re-delivered webhooks
   WhatsApp-send dedup, `storage/flags/<orderID>_<state>`, so a Listmonk/
   Telegram retry doesn't double-send a WhatsApp message.
 
-Raw payloads land in `storage/gokwik/`, `storage/shiprocket/`,
+Raw payloads land in `storage/shiprocket/`,
 `storage/woocommerce/` and `storage/medusa/`; WhatsApp API responses in
 `storage/whatsapp/`; leads CMS request/response pairs in `storage/leads/`
 (keyed by `cart_id`, from `/abc-src` only). Nothing is kept in memory — the
 process can be killed and restarted at any point without losing dedup state.
 
-Note: neither `abcHandler` nor `abcSrcHandler` call `isDuplicateEvent()`.
-GoKwik's `/abc` has no dedup at all (intentional — keep it that way unless
-asked). `/abc-src` has a **30-minute email-or-phone window** instead
+Note: `abcSrcHandler` doesn't call `isDuplicateEvent()`. It has a
+**30-minute email-or-phone window** instead
 (`abcSrcSeenRecently()` / `markAbcSrcSeen()`, markers in
 `storage/abc-src-recent/{email,phone}_<sha256 prefix>`, age = file mtime,
 phone normalized to last 10 digits): if either the email or the phone was
@@ -102,7 +98,7 @@ All config is environment variables read once at package-var init time in
 `main.go` (see the `var (...)` block at the top) — there's no config
 reload. [.env.example](.env.example) documents most of them; cross-check
 against `main.go` directly since the example file has drifted (see the
-Mautic note above and the Listmonk vars, which exist in code but aren't
+Listmonk vars, which exist in code but aren't
 listed in `.env.example`: `LISTMONK_ENABLED`, `LISTMONK_URL`,
 `LISTMONK_USER`, `LISTMONK_PASS`, `LISTMONK_LIST_ID_ABC`,
 `LISTMONK_LIST_ID_ORDERS`). [README.md](README.md) has a more accurate env
@@ -128,19 +124,18 @@ var listing.
 
 ## Things to know before making changes
 
-- **No auth on `/woocommerce`, `/abc`, or `/abc-src` today.** All trust
+- **No auth on `/woocommerce` or `/abc-src` today.** All trust
   whatever hits them. If you add signature verification there, it's a
   deliberate new feature, not a bug fix.
-- **`/abc-src` (Shiprocket/fastrr) has no `is_abandoned` equivalent** in its
-  payload, unlike GoKwik's `/abc`. Every request is currently treated as an
+- **`/abc-src` (Shiprocket/fastrr) has no `is_abandoned` flag** in its
+  payload. Every request is currently treated as an
   abandoned-cart event and always triggers Listmonk + WhatsApp ABC1 — this
   assumes fastrr only calls this endpoint for incomplete checkouts. If that
   assumption turns out to be wrong (e.g. fastrr also fires it for completed
   payments), this will need a gate on `payment_status` or `latest_stage` —
   check with the user before adding one speculatively.
-  `abcSrcHandler` reuses GoKwik's `msgABC1` for WhatsApp — not
-  source-segmented there. The Listmonk list *is* conditionally segmented,
-  though — see `isMobilePlaceholderEmail()` below.
+  `abcSrcHandler` uses `msgABC1` for WhatsApp. The Listmonk list is
+  conditionally segmented — see `isMobilePlaceholderEmail()` below.
 - **`postLeadToHelpdesk()`** (`main.go`) — `abcSrcHandler` posts each cart to
   an external leads CMS (`LEADS_ENDPOINT_URL`, `x-api-key: LEADS_API_KEY`)
   right after the Listmonk upsert. Synchronous, single attempt, no retry.
@@ -203,7 +198,7 @@ var listing.
   `isDuplicateEvent`. Don't "simplify" this back to the plain key.
 - **`IGNORED_CUSTOMER_EMAILS`** (comma-separated, case-insensitive, parsed by
   `parseEmailSet()`) — emails to silently skip on `/medusa-order` and
-  `/abc-src` only (not `/woocommerce` or GoKwik's `/abc`). Checked
+  `/abc-src` only (not `/woocommerce`). Checked
   immediately after the customer email is extracted, before dedup/logging/
   storage — a matching request does nothing but log one INFO line and
   respond `200`. Exists to keep the developer's own test traffic on the
@@ -221,16 +216,11 @@ var listing.
   The secret itself must never be committed or written into any doc in this
   repo — it lives only in `.env` (gitignored) on whichever host actually
   runs the service.
-- **`abcHandler` always returns HTTP 200** (via `defer`) regardless of
-  processing outcome, specifically to stop GoKwik from retrying. Don't
-  "fix" this into proper status codes without checking that GoKwik's retry
-  behavior is actually the reason.
 - **[rough.txt](rough.txt)** (gitignored, present locally) is the integration
   spec that `medusaOrderHandler` (`main.go`) was built from — payload shapes
   for `order.placed` / `order.shipped` / `order.canceled`. Medusa sends no
   auth and never retries (single attempt, fire-and-forget per the spec), so
-  the handler doesn't need to defend against redelivery storms the way
-  `abcHandler` does for GoKwik.
+  the handler doesn't need to defend against redelivery storms.
 - **Medusa endpoint is intentionally gated off** via `MEDUSA_ORDER_ENABLED`
   (unset/false by default) while it's being tested against the real store —
   it 503s until flipped on. Don't remove the gate without being asked.

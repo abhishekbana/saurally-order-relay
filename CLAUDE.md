@@ -37,7 +37,6 @@ Everything lives in a single file: `main.go` (~1500 lines, stdlib only, no exter
 ```
 POST /woocommerce   →  woocommerceHandler
 POST /medusa-order  →  medusaOrderHandler   (HMAC-signed, gated by MEDUSA_ORDER_ENABLED)
-POST /abc           →  abcHandler           (GoKwik)
 POST /abc-src       →  abcSrcHandler        (Shiprocket/fastrr checkout)
 GET  /health        →  200 ok
 /*                  →  404 (bot trap)
@@ -49,7 +48,7 @@ GET  /health        →  200 ok
 
 **`storage/flags/<key>`** — `flagPath` / `flagExists` / `createFlag`. WhatsApp-send dedup, keyed `<orderID>_<state>`. Used inside the WhatsApp block of both `woocommerceHandler` and `medusaOrderHandler` (`medusa_<order.id>` as the orderID prefix there) — belt-and-suspenders on top of `isDuplicateEvent`, not dead code for Medusa.
 
-**`abcHandler` does not dedupe at all** (intentional). **`abcSrcHandler` has a 30-minute email-or-phone window** — `abcSrcSeenRecently()` / `markAbcSrcSeen()`, markers in `storage/abc-src-recent/` (hashed, mtime = age, phone normalized to last 10 digits). Within the window it skips the leads CMS, Telegram fallback and WhatsApp ABC1, but still runs the Listmonk upsert and raw storage. Markers are written only for processed hits (fixed window).
+**`abcSrcHandler` has a 30-minute email-or-phone window** — `abcSrcSeenRecently()` / `markAbcSrcSeen()`, markers in `storage/abc-src-recent/` (hashed, mtime = age, phone normalized to last 10 digits). Within the window it skips the leads CMS, Telegram fallback and WhatsApp ABC1, but still runs the Listmonk upsert and raw storage. Markers are written only for processed hits (fixed window).
 
 ### Status normalization (WooCommerce only)
 
@@ -67,7 +66,6 @@ Medusa doesn't use this — `medusaOrderHandler` switches directly on the payloa
 ├── storage/
 │   ├── events/       idempotency markers (woocommerce, medusa)
 │   ├── flags/        whatsapp dedup markers (woocommerce, medusa)
-│   ├── gokwik/       raw GoKwik ABC payloads
 │   ├── shiprocket/   raw fastrr/Shiprocket checkout ABC payloads
 │   ├── woocommerce/  raw order payloads
 │   ├── medusa/       raw Medusa order payloads
@@ -86,26 +84,22 @@ Medusa doesn't use this — `medusaOrderHandler` switches directly on the payloa
 
 ### WhatsApp (Fast2SMS)
 
-`sendWhatsApp(orderID, phone, templateID, variables, state string)` — variables are pipe-separated (`"name|value1|value2"`). Response is stored to `whatsapp/<orderID>_<state>.json`. Templates: `MESSAGE_ID_ORDER_RECEIVED` / `_SHIPPED` / `_SHIPPED_WITH_TRACKING` (orders, both WooCommerce and Medusa) and `MESSAGE_ID_ABC1` (abandoned-cart nudge, both `abcHandler` and `abcSrcHandler`).
+`sendWhatsApp(orderID, phone, templateID, variables, state string)` — variables are pipe-separated (`"name|value1|value2"`). Response is stored to `whatsapp/<orderID>_<state>.json`. Templates: `MESSAGE_ID_ORDER_RECEIVED` / `_SHIPPED` / `_SHIPPED_WITH_TRACKING` (orders, both WooCommerce and Medusa) and `MESSAGE_ID_ABC1` (abandoned-cart nudge, `abcSrcHandler`).
 
 ### Telegram
 
 `sendTelegram()` fires in a goroutine (fire-and-forget). Guarded by `telegramEnabled`. Destinations:
 - New orders → `TELEGRAM_CHAT_ID_ORDERS` — WooCommerce (`processing` status) and Medusa (`order.placed`, tagged `[medusa-order]` in the title so it's distinguishable in the shared channel)
-- Abandoned carts → `TELEGRAM_CHAT_ID_ABC` — GoKwik (only when `is_abandoned=true`); fastrr/`/abc-src` only as a fallback when the leads CMS call fails (see below) — the CMS sends its own Telegram message on success, so sending both would double-notify
-
-### GoKwik ABC handler (`/abc`)
-
-- Listmonk upsert runs for **every cart** (including non-abandoned)
-- Telegram + WhatsApp ABC1 fire only when `is_abandoned == true`
-- Raw cart stored as `gokwik/<email>_<HHMMSS>.json`
+- Abandoned carts → `TELEGRAM_CHAT_ID_ABC` — fastrr/`/abc-src`, only as a fallback when the leads CMS call fails (see below) — the CMS sends its own Telegram message on success, so sending both would double-notify
 
 ### Shiprocket/fastrr ABC handler (`/abc-src`)
 
-- Flat payload (not wrapped in a `carts` array like GoKwik); customer fields at the top level (`email`, `phone_number`, `first_name`, `last_name`), city/state from `billing_address`
-- No `is_abandoned` equivalent — every webhook always triggers Listmonk + WhatsApp ABC1 (assumes fastrr only calls this for incomplete checkouts)
-- Reuses GoKwik's `msgABC1` for WhatsApp — not source-segmented there, only on the Listmonk list (mobile-only check, see above)
-- Cart URL field is `checkout_url` (vs. GoKwik's `abc_url`)
+The only abandoned-cart source (GoKwik `/abc` was removed; requests to `/abc` now 404 via the catch-all).
+
+- Flat payload; customer fields at the top level (`email`, `phone_number`, `first_name`, `last_name`), city/state from `billing_address`
+- No `is_abandoned` flag — every webhook triggers Listmonk + WhatsApp ABC1 (assumes fastrr only calls this for incomplete checkouts)
+- WhatsApp uses `MESSAGE_ID_ABC1`; Listmonk list is segmented by the mobile-only check (see above)
+- Cart URL field is `checkout_url`
 - **After the Listmonk upsert, posts to an external leads CMS** via `postLeadToHelpdesk(cartID, payload)` — `POST LEADS_ENDPOINT_URL` with `x-api-key: LEADS_API_KEY`, synchronous, single attempt, no retry. `2xx` → lead created, CMS sends its own Telegram notification, **relay skips its own Telegram alert**. Anything else (non-2xx, error, timeout, or `LEADS_API_KEY` unset) → relay falls back to its own `telegramChatIDABC` alert, same as before this feature existed. WhatsApp ABC1 always fires regardless. Request/response stored to `storage/leads/<cart_id>.json`. The CMS doesn't dedupe; the relay suppresses repeat hits for the same email or phone within 30 minutes (see above). After that window, a repeat creates a new lead.
 - Raw cart stored as `shiprocket/<email>_<HHMMSS>.json`
 
